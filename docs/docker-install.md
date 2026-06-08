@@ -20,6 +20,12 @@ OCI PEM 私钥不要放入仓库。Docker 部署时建议放在宿主机 `/etc/o
 
 ## 一键安装
 
+远程一键安装：
+
+```bash
+bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
+```
+
 在 Debian、Ubuntu、Armbian 或常见 RHEL 系服务器上执行：
 
 ```bash
@@ -47,7 +53,7 @@ http://服务器IP:18080/
 如果要换端口：
 
 ```bash
-sudo WEB_PORT=8088 bash scripts/install.sh install
+WEB_PORT=8088 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
 ```
 
 ## 菜单模式
@@ -79,6 +85,14 @@ sudo bash scripts/install.sh
 sudo PANEL_PASSWORD='change-this-password' \
   WEB_PORT=18080 \
   bash scripts/install.sh install
+```
+
+远程非交互方式：
+
+```bash
+PANEL_PASSWORD='change-this-password' \
+  WEB_PORT=18080 \
+  bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
 ```
 
 脚本会在镜像构建后调用容器内 `/app/panel-password hash` 生成 bcrypt hash，只把 hash 写入 `/etc/oci-lifecycle-platform/docker.env`。

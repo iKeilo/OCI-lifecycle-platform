@@ -7,6 +7,12 @@ Docker 版说明见：[Docker 版部署说明](docker-install.md)。
 默认 Docker 安装：
 
 ```bash
+bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
+```
+
+如果已经克隆仓库，也可以执行：
+
+```bash
 sudo bash scripts/install.sh install
 ```
 
