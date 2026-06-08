@@ -4,7 +4,7 @@ WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci
 
-COPY index.html tsconfig.json tsconfig.node.json vite.config.ts ./
+COPY index.html tsconfig.json tsconfig.app.json vite.config.ts ./
 COPY src ./src
 RUN npm run build
 
