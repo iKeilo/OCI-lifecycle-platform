@@ -1,8 +1,20 @@
 # 一键安装脚本说明
 
-`scripts/install.sh` 用于把 OCI Lifecycle Platform 安装为 Linux 服务。它支持 systemd 部署、前端构建、Go 后端构建、面板密码初始化、更新、备份和卸载。
+`scripts/install.sh` 是项目唯一的一键安装入口。默认使用 Docker 模式，也保留 systemd 模式。
 
-如果你希望用 Docker 隔离运行时依赖，请使用 `scripts/docker-install.sh`。Docker 版说明见：[Docker 版部署说明](docker-install.md)。
+Docker 版说明见：[Docker 版部署说明](docker-install.md)。
+
+默认 Docker 安装：
+
+```bash
+sudo bash scripts/install.sh install
+```
+
+传统 systemd 安装：
+
+```bash
+sudo bash scripts/install.sh --systemd install
+```
 
 ## 默认安装路径
 

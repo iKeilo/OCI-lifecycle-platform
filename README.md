@@ -43,7 +43,7 @@ Docker 版推荐用于干净服务器或希望隔离运行时依赖的环境：
 ```bash
 git clone https://github.com/iKeilo/OCI-lifecycle-platform.git
 cd OCI-lifecycle-platform
-sudo bash scripts/docker-install.sh install
+sudo bash scripts/install.sh install
 ```
 
 默认访问 `http://服务器IP:18080/`。完整说明见：[docs/docker-install.md](docs/docker-install.md)。

@@ -3,18 +3,27 @@ set -Eeuo pipefail
 
 APP_NAME="oci-lifecycle-platform"
 APP_TITLE="OCI Lifecycle Platform"
+WEB_PORT_INPUT="${WEB_PORT:-}"
+DEPLOY_MODE="${DEPLOY_MODE:-docker}"
 APP_DIR="${APP_DIR:-/opt/oci-lifecycle-platform}"
 SRC_DIR="$APP_DIR/src"
 BIN_DIR="$APP_DIR/bin"
 WWW_DIR="$APP_DIR/www"
 ENV_DIR="${ENV_DIR:-/etc/oci-lifecycle-platform}"
 ENV_FILE="$ENV_DIR/panel.env"
+DOCKER_APP_DIR="${DOCKER_APP_DIR:-/opt/oci-lifecycle-platform-docker}"
+DOCKER_SRC_DIR="$DOCKER_APP_DIR/src"
+DOCKER_COMPOSE_FILE="$DOCKER_SRC_DIR/docker-compose.yml"
+DOCKER_ENV_FILE="${DOCKER_ENV_FILE:-$ENV_DIR/docker.env}"
+DOCKER_KEY_DIR="${OCI_KEY_DIR:-$ENV_DIR/keys}"
+DOCKER_IMAGE="${OCI_LIFECYCLE_IMAGE:-oci-lifecycle-platform:local}"
+DOCKER_WEB_PORT="${WEB_PORT_INPUT:-18080}"
 SERVICE_NAME="${SERVICE_NAME:-oci-lifecycle-platform}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 SERVICE_FILE="${SYSTEMD_DIR}/${SERVICE_NAME}.service"
 REPO_URL="${OCI_LIFECYCLE_REPO_URL:-${A_SERIES_ORACLE_REPO_URL:-https://github.com/iKeilo/OCI-lifecycle-platform.git}}"
 BRANCH="${OCI_LIFECYCLE_BRANCH:-${A_SERIES_ORACLE_BRANCH:-main}}"
-WEB_PORT="${WEB_PORT:-80}"
+WEB_PORT="${WEB_PORT_INPUT:-80}"
 USE_NGINX="${USE_NGINX:-auto}"
 GO_ROOT="${GO_ROOT:-$APP_DIR/.toolchain/go}"
 BACKUP_DIR="${BACKUP_DIR:-/root}"
@@ -40,18 +49,21 @@ usage() {
   cat <<'USAGE'
 Usage:
   sudo bash scripts/install.sh
-  sudo bash scripts/install.sh install --source /path/to/repo
+  sudo bash scripts/install.sh install
   sudo bash scripts/install.sh update
   sudo bash scripts/install.sh change-password
   sudo bash scripts/install.sh uninstall
+  sudo bash scripts/install.sh --systemd install
+  sudo DEPLOY_MODE=systemd bash scripts/install.sh install --source /path/to/repo
 
 Environment:
+  DEPLOY_MODE                 docker or systemd. Default docker.
   OCI_LIFECYCLE_REPO_URL     Git repository used when not installing from a local source tree.
   OCI_LIFECYCLE_BRANCH       Git branch, default main.
   A_SERIES_ORACLE_REPO_URL   Backward-compatible alias for OCI_LIFECYCLE_REPO_URL.
   A_SERIES_ORACLE_BRANCH     Backward-compatible alias for OCI_LIFECYCLE_BRANCH.
   PANEL_PASSWORD             Non-interactive install/change-password password input.
-  WEB_PORT                   nginx listen port, default 80.
+  WEB_PORT                   web listen port. Docker default 18080, systemd default 80.
   USE_NGINX                  true, false, or auto. auto uses nginx only when already installed.
   GO_PROXY                   Optional Go module proxy, passed to GOPROXY.
   GO_ROOT                    Go toolchain directory, default APP_DIR/.toolchain/go.
@@ -67,6 +79,14 @@ parse_args() {
     case "$1" in
       install|update|change-password|configure-oci|start|stop|restart|status|logs|backup|uninstall)
         ACTION="$1"
+        shift
+        ;;
+      docker|--docker)
+        DEPLOY_MODE="docker"
+        shift
+        ;;
+      systemd|--systemd)
+        DEPLOY_MODE="systemd"
         shift
         ;;
       --source)
@@ -540,10 +560,353 @@ uninstall_app() {
   log "uninstall complete"
 }
 
-menu() {
+docker_env_get() {
+  local key="$1"
+  [[ -f "$DOCKER_ENV_FILE" ]] || return 0
+  grep -E "^${key}=" "$DOCKER_ENV_FILE" | tail -n1 | cut -d= -f2- || true
+}
+
+docker_env_set() {
+  local key="$1"
+  local value="$2"
+  mkdir -p "$(dirname "$DOCKER_ENV_FILE")"
+  touch "$DOCKER_ENV_FILE"
+  chmod 600 "$DOCKER_ENV_FILE"
+  local escaped
+  escaped="$(printf '%s' "$value" | sed -e 's/[\/&]/\\&/g')"
+  if grep -qE "^${key}=" "$DOCKER_ENV_FILE"; then
+    sed -i "s/^${key}=.*/${key}=${escaped}/" "$DOCKER_ENV_FILE"
+  else
+    printf '%s=%s\n' "$key" "$value" >>"$DOCKER_ENV_FILE"
+  fi
+}
+
+docker_current_source_dir() {
+  local here
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  if [[ -f "$here/package.json" && -f "$here/backend/go.mod" ]]; then
+    printf '%s\n' "$here"
+  fi
+}
+
+docker_install_base_packages() {
+  local packages=(git curl ca-certificates openssl tar)
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update
+    apt-get install -y "${packages[@]}"
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y "${packages[@]}"
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y "${packages[@]}"
+  else
+    local cmd
+    for cmd in "${packages[@]}"; do
+      command -v "$cmd" >/dev/null 2>&1 || die "missing required command: $cmd"
+    done
+  fi
+}
+
+docker_ensure_engine() {
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    return
+  fi
+
+  warn "Docker or docker compose is missing; installing Docker packages"
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update
+    apt-get install -y docker.io docker-compose-plugin
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y docker docker-compose-plugin
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y docker docker-compose-plugin
+  else
+    die "cannot install Docker automatically on this OS"
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl enable --now docker >/dev/null 2>&1 || true
+  else
+    service docker start >/dev/null 2>&1 || true
+  fi
+
+  command -v docker >/dev/null 2>&1 || die "docker installation failed"
+  docker compose version >/dev/null 2>&1 || die "docker compose plugin installation failed"
+}
+
+docker_sync_source() {
+  mkdir -p "$DOCKER_APP_DIR"
+  local source="${SOURCE_OVERRIDE:-}"
+  if [[ -z "$source" ]]; then
+    source="$(docker_current_source_dir || true)"
+  fi
+
+  if [[ -n "$source" ]]; then
+    [[ -f "$source/package.json" && -f "$source/backend/go.mod" ]] || die "source path is not a project tree: $source"
+    rm -rf "$DOCKER_SRC_DIR"
+    mkdir -p "$DOCKER_SRC_DIR"
+    tar -C "$source" -cf - \
+      --exclude '.git' \
+      --exclude '.codegraph' \
+      --exclude '.runtime' \
+      --exclude 'node_modules' \
+      --exclude 'dist' \
+      --exclude '*.log' \
+      --exclude '*.pem' \
+      --exclude '*.key' \
+      . | tar -C "$DOCKER_SRC_DIR" -xf -
+    log "Docker source copied from $source"
+    return
+  fi
+
+  if [[ -d "$DOCKER_SRC_DIR/.git" ]]; then
+    git -C "$DOCKER_SRC_DIR" fetch --all --prune
+    git -C "$DOCKER_SRC_DIR" checkout "$BRANCH"
+    git -C "$DOCKER_SRC_DIR" pull --ff-only origin "$BRANCH"
+  else
+    rm -rf "$DOCKER_SRC_DIR"
+    git clone --branch "$BRANCH" "$REPO_URL" "$DOCKER_SRC_DIR"
+  fi
+  log "Docker source synced from $REPO_URL#$BRANCH"
+}
+
+docker_ensure_env_defaults() {
+  mkdir -p "$ENV_DIR" "$DOCKER_KEY_DIR"
+  chmod 700 "$ENV_DIR" "$DOCKER_KEY_DIR"
+
+  if [[ ! -f "$DOCKER_ENV_FILE" ]]; then
+    [[ -f "$DOCKER_SRC_DIR/docker/.env.example" ]] || die "missing docker env template"
+    cp "$DOCKER_SRC_DIR/docker/.env.example" "$DOCKER_ENV_FILE"
+    chmod 600 "$DOCKER_ENV_FILE"
+    log "created Docker env file at $DOCKER_ENV_FILE"
+  fi
+
+  [[ -n "$(docker_env_get COMPOSE_PROJECT_NAME)" ]] || docker_env_set COMPOSE_PROJECT_NAME "$APP_NAME"
+  if [[ -n "${OCI_LIFECYCLE_IMAGE:-}" ]]; then
+    docker_env_set OCI_LIFECYCLE_IMAGE "$DOCKER_IMAGE"
+  else
+    [[ -n "$(docker_env_get OCI_LIFECYCLE_IMAGE)" ]] || docker_env_set OCI_LIFECYCLE_IMAGE "$DOCKER_IMAGE"
+  fi
+  if [[ -n "$WEB_PORT_INPUT" ]]; then
+    docker_env_set WEB_PORT "$DOCKER_WEB_PORT"
+  else
+    [[ -n "$(docker_env_get WEB_PORT)" ]] || docker_env_set WEB_PORT "$DOCKER_WEB_PORT"
+  fi
+  [[ -n "$(docker_env_get TZ)" ]] || docker_env_set TZ "Asia/Shanghai"
+  [[ -n "$(docker_env_get OCI_KEY_DIR)" ]] || docker_env_set OCI_KEY_DIR "$DOCKER_KEY_DIR"
+  [[ -n "$(docker_env_get PROFILE_DATA_VOLUME)" ]] || docker_env_set PROFILE_DATA_VOLUME "$APP_NAME-profile-data"
+  [[ -n "$(docker_env_get POSTGRES_DATA_VOLUME)" ]] || docker_env_set POSTGRES_DATA_VOLUME "$APP_NAME-postgres-data"
+  [[ -n "$(docker_env_get PANEL_SESSION_SECRET)" ]] || docker_env_set PANEL_SESSION_SECRET "$(openssl rand -hex 32)"
+  [[ -n "$(docker_env_get PROFILE_KEY_ENCRYPTION_KEY)" ]] || docker_env_set PROFILE_KEY_ENCRYPTION_KEY "$(openssl rand -base64 32 | tr -d '\n')"
+  [[ -n "$(docker_env_get OCI_EXECUTION_MODE)" ]] || docker_env_set OCI_EXECUTION_MODE "local"
+}
+
+docker_compose() {
+  local project
+  project="$(docker_env_get COMPOSE_PROJECT_NAME)"
+  docker compose --project-name "${project:-$APP_NAME}" \
+    --env-file "$DOCKER_ENV_FILE" \
+    -f "$DOCKER_COMPOSE_FILE" "$@"
+}
+
+docker_current_image() {
+  local image
+  image="$(docker_env_get OCI_LIFECYCLE_IMAGE)"
+  printf '%s\n' "${image:-$DOCKER_IMAGE}"
+}
+
+docker_build_image() {
+  [[ -f "$DOCKER_COMPOSE_FILE" ]] || die "missing compose file: $DOCKER_COMPOSE_FILE"
+  log "building Docker image $(docker_current_image)"
+  docker_compose build app
+}
+
+docker_hash_password() {
+  local password="$1"
+  printf '%s' "$password" | docker run --rm -i "$(docker_current_image)" /app/panel-password hash
+}
+
+docker_ensure_panel_password() {
+  local force="${1:-no}"
+  if [[ "$force" != "yes" && -n "$(docker_env_get PANEL_PASSWORD_HASH)" ]]; then
+    return
+  fi
+  local password hash
+  password="$(read_password)"
+  [[ "${#password}" -ge 8 ]] || die "password must be at least 8 characters"
+  hash="$(docker_hash_password "$password")"
+  docker_env_set PANEL_PASSWORD_HASH "$hash"
+  log "Docker panel password hash updated"
+}
+
+docker_health_check() {
+  local port url
+  port="$(docker_env_get WEB_PORT)"
+  url="http://127.0.0.1:${port:-18080}/api/health"
+  log "waiting for $url"
+  for _ in $(seq 1 40); do
+    if curl -fsS "$url" >/dev/null 2>&1; then
+      log "panel is available at http://$(hostname -I | awk '{print $1}'):${port:-18080}/"
+      return
+    fi
+    sleep 2
+  done
+  warn "Docker health check did not pass yet"
+  docker_compose logs --tail=80 app || true
+}
+
+docker_install_or_update() {
+  docker_install_base_packages
+  docker_ensure_engine
+  docker_sync_source
+  docker_ensure_env_defaults
+  docker_build_image
+  docker_ensure_panel_password "no"
+  docker_compose up -d app
+  docker_health_check
+}
+
+docker_change_password() {
+  [[ -f "$DOCKER_ENV_FILE" ]] || die "not installed: missing $DOCKER_ENV_FILE"
+  docker_ensure_engine
+  docker_build_image
+  docker_ensure_panel_password "yes"
+  docker_compose up -d app
+}
+
+docker_configure_oci_env() {
+  [[ -f "$DOCKER_ENV_FILE" ]] || die "not installed: missing $DOCKER_ENV_FILE"
+  local tenancy user fingerprint region compartment key_path
+  read -r -p "OCI tenancy OCID: " tenancy
+  read -r -p "OCI user OCID: " user
+  read -r -p "OCI fingerprint: " fingerprint
+  read -r -p "OCI region [ap-chuncheon-1]: " region
+  read -r -p "OCI compartment OCID: " compartment
+  read -r -p "Private key path inside container [/keys/oci.pem]: " key_path
+  region="${region:-ap-chuncheon-1}"
+  key_path="${key_path:-/keys/oci.pem}"
+  docker_env_set OCI_EXECUTION_MODE "local"
+  docker_env_set OCI_TENANCY_OCID "$tenancy"
+  docker_env_set OCI_USER_OCID "$user"
+  docker_env_set OCI_FINGERPRINT "$fingerprint"
+  docker_env_set OCI_REGION "$region"
+  docker_env_set OCI_COMPARTMENT_OCID "$compartment"
+  docker_env_set OCI_PRIVATE_KEY_PATH "$key_path"
+  log "OCI Docker env fallback updated. Put PEM files under $DOCKER_KEY_DIR."
+}
+
+docker_start_app() {
+  docker_ensure_engine
+  [[ -f "$DOCKER_ENV_FILE" ]] || die "not installed: missing $DOCKER_ENV_FILE"
+  docker_compose up -d app
+  docker_health_check
+}
+
+docker_stop_app() {
+  docker_ensure_engine
+  [[ -f "$DOCKER_ENV_FILE" ]] || die "not installed: missing $DOCKER_ENV_FILE"
+  docker_compose stop app
+}
+
+docker_status_logs() {
+  docker_ensure_engine
+  [[ -f "$DOCKER_ENV_FILE" ]] || die "not installed: missing $DOCKER_ENV_FILE"
+  docker_compose ps
+  docker_compose logs --tail=120 app
+}
+
+docker_backup_data() {
+  docker_ensure_engine
+  [[ -f "$DOCKER_ENV_FILE" ]] || die "not installed: missing $DOCKER_ENV_FILE"
+  local stamp backup_dir volume image
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  backup_dir="$DOCKER_APP_DIR/backups/$stamp"
+  volume="$(docker_env_get PROFILE_DATA_VOLUME)"
+  image="$(docker_current_image)"
+  mkdir -p "$backup_dir"
+  chmod 700 "$backup_dir"
+  cp "$DOCKER_ENV_FILE" "$backup_dir/docker.env"
+  docker run --rm \
+    -v "${volume:-$APP_NAME-profile-data}:/data:ro" \
+    -v "$backup_dir:/backup" \
+    "$image" /bin/sh -c "cd /data && tar -czf /backup/profile-data.tgz ."
+  log "Docker backup written to $backup_dir"
+  warn "backup contains secrets; keep it private"
+}
+
+docker_uninstall_app() {
+  docker_ensure_engine
+  if [[ -f "$DOCKER_ENV_FILE" && -f "$DOCKER_COMPOSE_FILE" ]]; then
+    docker_compose down
+  fi
+  if confirm "Remove Docker volumes with encrypted profile data?"; then
+    if [[ -f "$DOCKER_ENV_FILE" && -f "$DOCKER_COMPOSE_FILE" ]]; then
+      docker_compose down -v || true
+    fi
+  fi
+  if confirm "Remove Docker source directory $DOCKER_APP_DIR?"; then
+    rm -rf "$DOCKER_APP_DIR"
+  fi
+  if confirm "Remove config directory $ENV_DIR?"; then
+    rm -rf "$ENV_DIR"
+  fi
+  log "Docker uninstall complete"
+}
+
+docker_menu() {
   cat <<MENU
 
-${APP_TITLE} one-click installer
+${APP_TITLE} one-click installer - Docker mode
+1) Install / first setup
+2) Update / rebuild
+3) Change panel login password
+4) Configure OCI env fallback
+5) Start
+6) Stop
+7) Restart
+8) Status and logs
+9) Backup env and profile data
+10) Uninstall
+MENU
+  read -r -p "Choose an option [1-10]: " choice
+  case "$choice" in
+    1) ACTION="install" ;;
+    2) ACTION="update" ;;
+    3) ACTION="change-password" ;;
+    4) ACTION="configure-oci" ;;
+    5) ACTION="start" ;;
+    6) ACTION="stop" ;;
+    7) ACTION="restart" ;;
+    8) ACTION="status" ;;
+    9) ACTION="backup" ;;
+    10) ACTION="uninstall" ;;
+    *) die "invalid option" ;;
+  esac
+}
+
+run_docker_action() {
+  case "$ACTION" in
+    install|update) docker_install_or_update ;;
+    change-password) docker_change_password ;;
+    configure-oci) docker_configure_oci_env ;;
+    start) docker_start_app ;;
+    stop) docker_stop_app ;;
+    restart) docker_stop_app || true; docker_start_app ;;
+    status|logs) docker_status_logs ;;
+    backup) docker_backup_data ;;
+    uninstall) docker_uninstall_app ;;
+    *) usage; exit 1 ;;
+  esac
+}
+
+menu() {
+  if [[ "$DEPLOY_MODE" == "docker" ]]; then
+    docker_menu
+    return
+  fi
+
+  cat <<MENU
+
+${APP_TITLE} one-click installer - systemd mode
 1) Install / first setup
 2) Update application
 3) Change panel login password
@@ -572,6 +935,15 @@ MENU
 }
 
 run_action() {
+  case "$DEPLOY_MODE" in
+    docker)
+      run_docker_action
+      return
+      ;;
+    systemd) ;;
+    *) die "DEPLOY_MODE must be docker or systemd" ;;
+  esac
+
   resolve_web_stack
   case "$ACTION" in
     install|update) install_or_update ;;
