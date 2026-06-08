@@ -572,6 +572,9 @@ docker_env_set() {
   mkdir -p "$(dirname "$DOCKER_ENV_FILE")"
   touch "$DOCKER_ENV_FILE"
   chmod 600 "$DOCKER_ENV_FILE"
+  if [[ "$key" == "PANEL_PASSWORD_HASH" ]]; then
+    value="${value//\$/\$\$}"
+  fi
   local escaped
   escaped="$(printf '%s' "$value" | sed -e 's/[\/&]/\\&/g')"
   if grep -qE "^${key}=" "$DOCKER_ENV_FILE"; then
@@ -591,16 +594,28 @@ docker_current_source_dir() {
 
 docker_install_base_packages() {
   local packages=(git curl ca-certificates openssl tar)
+  local missing=()
+  local package
+  for package in "${packages[@]}"; do
+    if ! command -v "$package" >/dev/null 2>&1; then
+      missing+=("$package")
+    fi
+  done
+  if [[ "${#missing[@]}" -eq 0 ]]; then
+    log "required Docker install commands are already installed"
+    return
+  fi
+
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update
-    apt-get install -y "${packages[@]}"
+    apt-get install -y "${missing[@]}"
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y "${packages[@]}"
+    dnf install -y "${missing[@]}"
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y "${packages[@]}"
+    yum install -y "${missing[@]}"
   else
     local cmd
-    for cmd in "${packages[@]}"; do
+    for cmd in "${missing[@]}"; do
       command -v "$cmd" >/dev/null 2>&1 || die "missing required command: $cmd"
     done
   fi
