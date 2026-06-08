@@ -1,25 +1,51 @@
-# One-Click Install Guide
+# 一键安装脚本说明
 
-This guide installs A-Series Oracle as:
+`scripts/install.sh` 用于把 OCI Lifecycle Platform 安装为 Linux 服务。它支持 systemd 部署、前端构建、Go 后端构建、面板密码初始化、更新、备份和卸载。
 
-- Go API service: `a-series-oracle`
-- Static web console: nginx or the Go server on `WEB_PORT` (default `80`)
-- Local config and encrypted profile store: `/etc/a-series-oracle`
-- Application files: `/opt/a-series-oracle`
+## 默认安装路径
 
-## Supported Server
+```text
+/opt/oci-lifecycle-platform/
+  bin/oci-lifecycle-platform
+  bin/panel-password
+  src/
+  www/
 
-The installer currently supports Debian/Ubuntu systems with `apt`, `systemd`, and `nginx`.
+/etc/oci-lifecycle-platform/
+  panel.env
+  profiles.json
 
-Run as root:
+/etc/systemd/system/oci-lifecycle-platform.service
+```
+
+如果 `USE_NGINX=true`，或 `USE_NGINX=auto` 且检测到 nginx，脚本还会创建：
+
+```text
+/etc/nginx/sites-available/oci-lifecycle-platform.conf
+```
+
+## 支持系统
+
+当前脚本面向 Debian/Ubuntu/Armbian：
+
+- `systemd`
+- `apt-get`
+- `curl`
+- `tar`
+- Node.js 20+
+- Go 版本满足 `backend/go.mod`
+
+如果系统没有合适 Go 版本，脚本会从 `go.dev` 下载对应 CPU 架构的 Go 工具链到 `APP_DIR/.toolchain/go`，不会写入 `/usr/local/go`。
+
+## 菜单选项
+
+直接运行：
 
 ```bash
 sudo bash scripts/install.sh
 ```
 
-## Menu Options
-
-The script exposes 10 options:
+菜单包含 10 个选项：
 
 1. Install / first setup
 2. Update application
@@ -32,85 +58,121 @@ The script exposes 10 options:
 9. Backup local config
 10. Uninstall
 
-## Non-Interactive Install
+## 从 GitHub 安装
 
-From a local source tree:
+公开仓库或服务器已具备 GitHub 拉取权限时：
 
 ```bash
-sudo PANEL_PASSWORD='change-this-password' bash scripts/install.sh install --source /tmp/a-series-oracle
+git clone https://github.com/iKeilo/OCI-lifecycle-platform.git
+cd OCI-lifecycle-platform
+sudo bash scripts/install.sh install
 ```
 
-From GitHub after the repository exists:
+脚本默认仓库地址已经是：
+
+```text
+https://github.com/iKeilo/OCI-lifecycle-platform.git
+```
+
+因此也可以指定一个空目录运行：
 
 ```bash
-sudo A_SERIES_ORACLE_REPO_URL='https://github.com/YOUR_USER/a-series-oracle.git' \
-  WEB_PORT=8088 \
-  USE_NGINX=false \
-  APP_DIR=/mnt/Storage1/a-series-oracle \
-  ENV_DIR=/mnt/Storage1/a-series-oracle-config \
-  PANEL_PASSWORD='change-this-password' \
+sudo OCI_LIFECYCLE_REPO_URL=https://github.com/iKeilo/OCI-lifecycle-platform.git \
   bash scripts/install.sh install
 ```
 
-The password is converted to a bcrypt hash and written as `PANEL_PASSWORD_HASH`. The plain password is not stored by the installer.
+私有仓库需要先配置 GitHub 凭据、deploy key，或使用本地源码安装。
 
-If port `80` is already occupied, set `WEB_PORT`, for example:
+## 从本地源码安装
+
+适合测试服务器、内网服务器或私有仓库无 Git 凭据的场景：
+
+```bash
+sudo bash scripts/install.sh install --source /path/to/OCI-lifecycle-platform
+```
+
+非交互设置密码：
+
+```bash
+sudo PANEL_PASSWORD='change-this-password' \
+  bash scripts/install.sh install --source /path/to/OCI-lifecycle-platform
+```
+
+脚本会把明文密码转换为 bcrypt，写入 `PANEL_PASSWORD_HASH`，并清空 `PANEL_PASSWORD`。
+
+## 无 nginx / 端口被占用
+
+如果 80 端口已经被占用，设置 `WEB_PORT`：
 
 ```bash
 sudo WEB_PORT=18080 bash scripts/install.sh install
 ```
 
-Set `USE_NGINX=false` to serve the frontend directly from the Go service. This is useful for small servers or systems where nginx is not installed:
+如果不想安装或使用 nginx，让 Go 服务直接托管前端：
 
 ```bash
 sudo WEB_PORT=18080 USE_NGINX=false bash scripts/install.sh install
 ```
 
-For very small test systems with a full root partition, you can keep app files, config, and build caches on a larger mounted disk:
+此时 `/api/*` 和前端页面都由同一个 Go 进程提供。
+
+## 小根分区服务器
+
+如果根分区很小，建议把应用、配置、缓存和备份放到大盘：
 
 ```bash
-sudo APP_DIR=/mnt/Storage1/a-series-oracle \
-  ENV_DIR=/mnt/Storage1/a-series-oracle-config \
-  SYSTEMD_DIR=/run/systemd/system \
+sudo APP_DIR=/mnt/Storage1/oci-lifecycle-platform \
+  ENV_DIR=/mnt/Storage1/oci-lifecycle-platform-config \
+  BACKUP_DIR=/mnt/Storage1/oci-lifecycle-platform-backups \
   WEB_PORT=18080 \
   USE_NGINX=false \
   GO_PROXY=https://goproxy.cn,direct \
-  BACKUP_DIR=/mnt/Storage1/a-series-oracle-backups \
-  bash scripts/install.sh install
+  bash scripts/install.sh install --source /tmp/OCI-lifecycle-platform
 ```
 
-`SYSTEMD_DIR=/run/systemd/system` is suitable for temporary tests only. Production should use the default `/etc/systemd/system`.
+临时测试可使用：
 
-If the server cannot reach `proxy.golang.org`, set `GO_PROXY` to a reachable module proxy.
-If `/root` is small, set `BACKUP_DIR` when using the backup option.
+```bash
+SYSTEMD_DIR=/run/systemd/system
+```
 
-## Update
+注意：`/run/systemd/system` 不是持久目录，服务器重启后服务单元会丢失。生产环境应使用默认 `/etc/systemd/system`。
+
+## 更新
 
 ```bash
 sudo bash scripts/install.sh update
 ```
 
-Update rebuilds the frontend, rebuilds the Go backend, refreshes nginx config, and restarts services. It preserves `/etc/a-series-oracle/panel.env` and the encrypted profile store.
+更新会：
 
-## Change Panel Password
+- 同步源码。
+- 重新执行 `npm ci && npm run build`。
+- 重新构建 Go 后端。
+- 保留 `panel.env` 和 `profiles.json`。
+- 重启服务。
+
+## 更改面板密码
 
 ```bash
 sudo bash scripts/install.sh change-password
 ```
 
-The script prompts for the new password, generates a bcrypt hash through `backend/cmd/panel-password`, writes it to `PANEL_PASSWORD_HASH`, clears `PANEL_PASSWORD`, and restarts the API service.
+非交互方式：
 
-## OCI Configuration
+```bash
+sudo PANEL_PASSWORD='new-strong-password' bash scripts/install.sh change-password
+```
 
-Preferred production flow:
+## 配置 OCI env fallback
 
-1. Log in to the web console.
-2. Open Profile management.
-3. Paste the OCI profile block.
-4. Paste or reference the PEM private key.
-5. Test connection from the UI.
+推荐在 Web 控制台的 Profile 页面粘贴 OCI config 和 PEM 私钥。脚本中的 `configure-oci` 只作为 env fallback：
 
-The installer also has an OCI env fallback option for simple deployments. It writes:
+```bash
+sudo bash scripts/install.sh configure-oci
+```
+
+会写入：
 
 - `OCI_EXECUTION_MODE=oci`
 - `OCI_TENANCY_OCID`
@@ -119,41 +181,55 @@ The installer also has an OCI env fallback option for simple deployments. It wri
 - `OCI_REGION`
 - `OCI_PRIVATE_KEY_FILE`
 
-Do not place PEM files inside the Git repository.
+不要把 PEM 文件放进 Git 仓库。
 
-## Files Created
-
-```text
-/opt/a-series-oracle/
-  bin/a-series-oracle
-  bin/panel-password
-  src/
-  www/
-
-/etc/a-series-oracle/
-  panel.env
-  profiles.json
-
-/etc/systemd/system/a-series-oracle.service
-/etc/nginx/sites-available/a-series-oracle.conf
-```
-
-The nginx file is only created when `USE_NGINX=true` or when `USE_NGINX=auto` detects nginx already installed.
-
-## Verify
+## 验证
 
 ```bash
-systemctl status a-series-oracle --no-pager
-systemctl status nginx --no-pager
+systemctl status oci-lifecycle-platform --no-pager
 curl -i http://127.0.0.1/api/health
 ```
 
-When panel auth is enabled, protected API routes return `401` until you log in through the web console.
+使用非 80 端口：
 
-## Uninstall
+```bash
+curl -i http://127.0.0.1:18080/api/health
+```
+
+开启面板密码后，未登录访问受保护 API 应返回：
+
+```json
+{"error":{"code":"AUTH_REQUIRED","message":"panel login required"}}
+```
+
+## 备份
+
+```bash
+sudo BACKUP_DIR=/root bash scripts/install.sh backup
+```
+
+备份包含 `panel.env` 和加密 Profile store，仍然属于敏感文件，请妥善保存。
+
+## 卸载
 
 ```bash
 sudo bash scripts/install.sh uninstall
 ```
 
-The uninstall flow removes the app directory, service file, and nginx site. It asks before removing `/etc/a-series-oracle` because that directory contains encrypted profile data and panel secrets.
+卸载会移除应用目录、systemd unit 和 nginx site。脚本会询问是否删除配置目录，因为其中可能包含面板密钥和加密 Profile 数据。
+
+## 环境变量速查
+
+| 变量 | 用途 | 默认值 |
+| --- | --- | --- |
+| `OCI_LIFECYCLE_REPO_URL` | Git 仓库地址 | `https://github.com/iKeilo/OCI-lifecycle-platform.git` |
+| `OCI_LIFECYCLE_BRANCH` | Git 分支 | `main` |
+| `PANEL_PASSWORD` | 非交互安装/改密码输入 | 空 |
+| `WEB_PORT` | Web 监听端口 | `80` |
+| `USE_NGINX` | `true` / `false` / `auto` | `auto` |
+| `GO_PROXY` | Go module proxy | 空 |
+| `GO_ROOT` | Go 工具链安装路径 | `$APP_DIR/.toolchain/go` |
+| `APP_DIR` | 应用目录 | `/opt/oci-lifecycle-platform` |
+| `ENV_DIR` | 配置目录 | `/etc/oci-lifecycle-platform` |
+| `BACKUP_DIR` | 备份输出目录 | `/root` |
+| `SYSTEMD_DIR` | systemd unit 目录 | `/etc/systemd/system` |

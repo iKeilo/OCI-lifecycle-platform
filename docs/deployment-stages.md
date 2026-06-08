@@ -130,7 +130,7 @@ npm run build
 
 已落地：
 
-- `scripts/install.sh` 一键安装脚本。
+- `scripts/install.sh` 一键安装脚本，默认仓库为 `https://github.com/iKeilo/OCI-lifecycle-platform.git`。
 - systemd API 服务。
 - nginx 静态前端与 `/api` 反代，或 Go 后端直接托管 SPA。
 - 安装、更新、改密码、配置 OCI 环境、启停、重启、状态日志、备份、卸载。

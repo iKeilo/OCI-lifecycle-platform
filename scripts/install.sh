@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-APP_NAME="a-series-oracle"
-APP_TITLE="A-Series Oracle"
-APP_DIR="${APP_DIR:-/opt/a-series-oracle}"
+APP_NAME="oci-lifecycle-platform"
+APP_TITLE="OCI Lifecycle Platform"
+APP_DIR="${APP_DIR:-/opt/oci-lifecycle-platform}"
 SRC_DIR="$APP_DIR/src"
 BIN_DIR="$APP_DIR/bin"
 WWW_DIR="$APP_DIR/www"
-ENV_DIR="${ENV_DIR:-/etc/a-series-oracle}"
+ENV_DIR="${ENV_DIR:-/etc/oci-lifecycle-platform}"
 ENV_FILE="$ENV_DIR/panel.env"
-SERVICE_NAME="${SERVICE_NAME:-a-series-oracle}"
+SERVICE_NAME="${SERVICE_NAME:-oci-lifecycle-platform}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 SERVICE_FILE="${SYSTEMD_DIR}/${SERVICE_NAME}.service"
-REPO_URL="${A_SERIES_ORACLE_REPO_URL:-}"
-BRANCH="${A_SERIES_ORACLE_BRANCH:-main}"
+REPO_URL="${OCI_LIFECYCLE_REPO_URL:-${A_SERIES_ORACLE_REPO_URL:-https://github.com/iKeilo/OCI-lifecycle-platform.git}}"
+BRANCH="${OCI_LIFECYCLE_BRANCH:-${A_SERIES_ORACLE_BRANCH:-main}}"
 WEB_PORT="${WEB_PORT:-80}"
 USE_NGINX="${USE_NGINX:-auto}"
 GO_ROOT="${GO_ROOT:-$APP_DIR/.toolchain/go}"
@@ -46,8 +46,10 @@ Usage:
   sudo bash scripts/install.sh uninstall
 
 Environment:
-  A_SERIES_ORACLE_REPO_URL   Git repository used when not installing from a local source tree.
-  A_SERIES_ORACLE_BRANCH     Git branch, default main.
+  OCI_LIFECYCLE_REPO_URL     Git repository used when not installing from a local source tree.
+  OCI_LIFECYCLE_BRANCH       Git branch, default main.
+  A_SERIES_ORACLE_REPO_URL   Backward-compatible alias for OCI_LIFECYCLE_REPO_URL.
+  A_SERIES_ORACLE_BRANCH     Backward-compatible alias for OCI_LIFECYCLE_BRANCH.
   PANEL_PASSWORD             Non-interactive install/change-password password input.
   WEB_PORT                   nginx listen port, default 80.
   USE_NGINX                  true, false, or auto. auto uses nginx only when already installed.
@@ -55,8 +57,8 @@ Environment:
   GO_ROOT                    Go toolchain directory, default APP_DIR/.toolchain/go.
   SYSTEMD_DIR                systemd unit directory, default /etc/systemd/system.
   BACKUP_DIR                 Backup output directory, default /root.
-  APP_DIR                    Install directory, default /opt/a-series-oracle.
-  ENV_DIR                    Config directory, default /etc/a-series-oracle.
+  APP_DIR                    Install directory, default /opt/oci-lifecycle-platform.
+  ENV_DIR                    Config directory, default /etc/oci-lifecycle-platform.
 USAGE
 }
 
@@ -361,7 +363,7 @@ build_app() {
   if [[ -n "${GO_PROXY:-}" ]]; then
     export GOPROXY="$GO_PROXY"
   fi
-  (cd "$SRC_DIR/backend" && go build -o "$BIN_DIR/a-series-oracle" ./cmd/server)
+  (cd "$SRC_DIR/backend" && go build -o "$BIN_DIR/oci-lifecycle-platform" ./cmd/server)
   (cd "$SRC_DIR/backend" && go build -o "$BIN_DIR/panel-password" ./cmd/panel-password)
   rm -rf "$WWW_DIR"
   mkdir -p "$WWW_DIR"
@@ -381,7 +383,7 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=${ENV_FILE}
 WorkingDirectory=${APP_DIR}
-ExecStart=${BIN_DIR}/a-series-oracle
+ExecStart=${BIN_DIR}/oci-lifecycle-platform
 Restart=on-failure
 RestartSec=3
 User=root
