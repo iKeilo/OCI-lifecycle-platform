@@ -12,12 +12,15 @@ FROM golang:1.26-bookworm AS backend
 WORKDIR /src/backend
 
 ARG GO_PROXY
+ARG TARGETOS=linux
+ARG TARGETARCH
 COPY backend/go.mod backend/go.sum ./
 RUN if [ -n "$GO_PROXY" ]; then go env -w GOPROXY="$GO_PROXY"; fi && go mod download
 
 COPY backend ./
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/oci-lifecycle-platform ./cmd/server \
-    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/panel-password ./cmd/panel-password
+RUN target_arch="${TARGETARCH:-$(go env GOARCH)}" \
+    && CGO_ENABLED=0 GOOS="${TARGETOS:-linux}" GOARCH="$target_arch" go build -trimpath -ldflags="-s -w" -o /out/oci-lifecycle-platform ./cmd/server \
+    && CGO_ENABLED=0 GOOS="${TARGETOS:-linux}" GOARCH="$target_arch" go build -trimpath -ldflags="-s -w" -o /out/panel-password ./cmd/panel-password
 
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app

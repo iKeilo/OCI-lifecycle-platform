@@ -44,6 +44,13 @@ if [[ "$(id -u)" -ne 0 ]]; then
       OCI_LIFECYCLE_BRANCH="$BRANCH" \
       OCI_LIFECYCLE_REPO_OWNER="$REPO_OWNER" \
       OCI_LIFECYCLE_REPO_NAME="$REPO_NAME" \
+      OCI_LIFECYCLE_IMAGE="${OCI_LIFECYCLE_IMAGE:-}" \
+      DEPLOY_MODE="${DEPLOY_MODE:-}" \
+      DOCKER_APP_DIR="${DOCKER_APP_DIR:-}" \
+      DOCKER_ENV_FILE="${DOCKER_ENV_FILE:-}" \
+      ENV_DIR="${ENV_DIR:-}" \
+      OCI_KEY_DIR="${OCI_KEY_DIR:-}" \
+      GO_PROXY="${GO_PROXY:-}" \
       PANEL_PASSWORD="${PANEL_PASSWORD:-}" \
       WEB_PORT="${WEB_PORT:-}" \
       bash -c 'curl -fsSL "$1" | bash -s -- "${@:2}"' bash "$RAW_URL" "$@"
