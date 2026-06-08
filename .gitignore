@@ -5,6 +5,7 @@ dist/
 .env
 .env.*
 !.env.example
+!**/.env.example
 *.log
 *.tsbuildinfo
 vite-dev.err.log

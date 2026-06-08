@@ -2,6 +2,8 @@
 
 `scripts/install.sh` 用于把 OCI Lifecycle Platform 安装为 Linux 服务。它支持 systemd 部署、前端构建、Go 后端构建、面板密码初始化、更新、备份和卸载。
 
+如果你希望用 Docker 隔离运行时依赖，请使用 `scripts/docker-install.sh`。Docker 版说明见：[Docker 版部署说明](docker-install.md)。
+
 ## 默认安装路径
 
 ```text
