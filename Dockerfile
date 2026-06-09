@@ -39,7 +39,7 @@ COPY --from=frontend /src/dist /app/www
 ENV PORT=8080
 ENV STATIC_DIR=/app/www
 ENV PROFILE_STORE_FILE=/data/profiles.json
-ENV OCI_EXECUTION_MODE=local
+ENV OCI_EXECUTION_MODE=oci
 ENV TZ=Asia/Shanghai
 
 VOLUME ["/data"]

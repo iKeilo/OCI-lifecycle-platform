@@ -20,6 +20,7 @@ bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/m
 
 - Web 端口直接回车会随机分配可用端口。
 - 第一次输入面板密码时直接回车会随机生成密码，并保存到 `/etc/oci-lifecycle-platform/panel-password.txt`。
+- 安装脚本默认设置 `OCI_EXECUTION_MODE=oci`，Profile 测试会直接调用真实 OCI API。
 
 如果已经克隆仓库，也可以执行：
 
@@ -257,6 +258,7 @@ sudo bash scripts/install.sh uninstall
 | `OCI_LIFECYCLE_BRANCH` | Git 分支 | `main` |
 | `PANEL_PASSWORD` | 非交互安装/改密码输入 | 空 |
 | `PANEL_PASSWORD_FILE` | 随机生成面板密码时的保存文件 | `$ENV_DIR/panel-password.txt` |
+| `OCI_EXECUTION_MODE` | 执行模式，生产默认应为真实 OCI SDK | `oci` |
 | `WEB_PORT` | Web 监听端口 | `80` |
 | `USE_NGINX` | `true` / `false` / `auto` | `auto` |
 | `GO_PROXY` | Go module proxy | 空 |

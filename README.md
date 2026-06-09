@@ -110,7 +110,7 @@ npm run build
 - `PANEL_SESSION_SECRET`：登录 Cookie 签名密钥。
 - `PROFILE_KEY_ENCRYPTION_KEY`：32 字节或 base64 32 字节密钥，用于加密 OCI 私钥。
 - `PROFILE_STORE_FILE`：无 PostgreSQL 时的本地加密 Profile 文件。
-- `OCI_EXECUTION_MODE`：`local` 或 `oci`。
+- `OCI_EXECUTION_MODE`：默认 `oci`，安装后直接使用真实 OCI SDK；`local` 仅用于开发联调。
 - `DATABASE_URL`：可选 PostgreSQL 持久化。
 - `STATIC_DIR`：由 Go 服务直接托管前端时的静态目录。
 

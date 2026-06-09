@@ -1,6 +1,6 @@
 # Docker 版部署说明
 
-Docker 版适合把前端、Go 后端和运行时依赖打成一个镜像部署。默认使用容器内 Go 服务托管前端静态文件，不依赖 nginx。安装入口统一为 `scripts/install.sh`，不再提供拆开的 Docker 专用脚本。
+Docker 版适合把前端、Go 后端和运行时依赖打成一个镜像部署。默认使用容器内 Go 服务托管前端静态文件，不依赖 nginx。安装后默认启用真实 OCI SDK 模式，Profile 测试和资源发现会走真实 OCI API。
 
 ## 文件结构
 
@@ -40,6 +40,7 @@ sudo bash scripts/install.sh install
 - 复制或拉取源码。
 - 创建 `/etc/oci-lifecycle-platform/docker.env`。
 - 生成 `PANEL_SESSION_SECRET` 和 `PROFILE_KEY_ENCRYPTION_KEY`。
+- 设置 `OCI_EXECUTION_MODE=oci`，避免装完后 Profile 测试停留在本地模式。
 - 构建 Docker 镜像。
 - 初始化面板登录密码的 bcrypt hash。
 - 启动服务并检查 `/api/health`。

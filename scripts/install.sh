@@ -326,7 +326,11 @@ ensure_env_defaults() {
   touch "$ENV_FILE"
   chmod 600 "$ENV_FILE"
   [[ -n "$(env_get PORT)" ]] || env_set PORT "8080"
-  [[ -n "$(env_get OCI_EXECUTION_MODE)" ]] || env_set OCI_EXECUTION_MODE "local"
+  if [[ -n "${OCI_EXECUTION_MODE:-}" ]]; then
+    env_set OCI_EXECUTION_MODE "$OCI_EXECUTION_MODE"
+  elif [[ -z "$(env_get OCI_EXECUTION_MODE)" || "$(env_get OCI_EXECUTION_MODE)" == "local" ]]; then
+    env_set OCI_EXECUTION_MODE "oci"
+  fi
   [[ -n "$(env_get PROFILE_STORE_FILE)" ]] || env_set PROFILE_STORE_FILE "$ENV_DIR/profiles.json"
   [[ -n "$(env_get PROFILE_KEY_ENCRYPTION_KEY)" ]] || env_set PROFILE_KEY_ENCRYPTION_KEY "$(openssl rand -base64 32)"
   [[ -n "$(env_get PANEL_SESSION_SECRET)" ]] || env_set PANEL_SESSION_SECRET "$(openssl rand -hex 32)"
@@ -740,7 +744,11 @@ docker_ensure_env_defaults() {
   [[ -n "$(docker_env_get POSTGRES_DATA_VOLUME)" ]] || docker_env_set POSTGRES_DATA_VOLUME "$APP_NAME-postgres-data"
   [[ -n "$(docker_env_get PANEL_SESSION_SECRET)" ]] || docker_env_set PANEL_SESSION_SECRET "$(openssl rand -hex 32)"
   [[ -n "$(docker_env_get PROFILE_KEY_ENCRYPTION_KEY)" ]] || docker_env_set PROFILE_KEY_ENCRYPTION_KEY "$(openssl rand -base64 32 | tr -d '\n')"
-  [[ -n "$(docker_env_get OCI_EXECUTION_MODE)" ]] || docker_env_set OCI_EXECUTION_MODE "local"
+  if [[ -n "${OCI_EXECUTION_MODE:-}" ]]; then
+    docker_env_set OCI_EXECUTION_MODE "$OCI_EXECUTION_MODE"
+  elif [[ -z "$(docker_env_get OCI_EXECUTION_MODE)" || "$(docker_env_get OCI_EXECUTION_MODE)" == "local" ]]; then
+    docker_env_set OCI_EXECUTION_MODE "oci"
+  fi
 }
 
 docker_compose() {
@@ -927,7 +935,7 @@ docker_configure_oci_env() {
   read -r -p "Private key path inside container [/keys/oci.pem]: " key_path
   region="${region:-ap-chuncheon-1}"
   key_path="${key_path:-/keys/oci.pem}"
-  docker_env_set OCI_EXECUTION_MODE "local"
+  docker_env_set OCI_EXECUTION_MODE "oci"
   docker_env_set OCI_TENANCY_OCID "$tenancy"
   docker_env_set OCI_USER_OCID "$user"
   docker_env_set OCI_FINGERPRINT "$fingerprint"
