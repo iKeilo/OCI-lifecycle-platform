@@ -10,6 +10,12 @@ Docker 版说明见：[Docker 版部署说明](docker-install.md)。
 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
 ```
 
+原生 Linux/systemd 安装：
+
+```bash
+bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_linux_install.sh)
+```
+
 交互安装时：
 
 - Web 端口直接回车会随机分配可用端口。
