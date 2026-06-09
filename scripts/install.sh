@@ -573,7 +573,7 @@ docker_env_set() {
   touch "$DOCKER_ENV_FILE"
   chmod 600 "$DOCKER_ENV_FILE"
   if [[ "$key" == "PANEL_PASSWORD_HASH" ]]; then
-    value="${value//\$/\$\$}"
+    value="$(printf '%s' "$value" | sed 's/\$/\$\$/g')"
   fi
   local escaped
   escaped="$(printf '%s' "$value" | sed -e 's/[\/&]/\\&/g')"
