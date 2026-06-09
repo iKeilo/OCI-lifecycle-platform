@@ -29,6 +29,7 @@ Environment:
   OCI_LIFECYCLE_REPO_OWNER   GitHub owner, default iKeilo.
   OCI_LIFECYCLE_REPO_NAME    GitHub repo, default OCI-lifecycle-platform.
   PANEL_PASSWORD             Optional non-interactive panel password.
+  PANEL_PASSWORD_FILE        File used when a random panel password is generated.
   WEB_PORT                   Docker default 18080, systemd default 80.
 USAGE
 }
@@ -52,6 +53,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
       OCI_KEY_DIR="${OCI_KEY_DIR:-}" \
       GO_PROXY="${GO_PROXY:-}" \
       PANEL_PASSWORD="${PANEL_PASSWORD:-}" \
+      PANEL_PASSWORD_FILE="${PANEL_PASSWORD_FILE:-}" \
       WEB_PORT="${WEB_PORT:-}" \
       bash -c 'curl -fsSL "$1" | bash -s -- "${@:2}"' bash "$RAW_URL" "$@"
   fi

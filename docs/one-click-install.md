@@ -10,6 +10,11 @@ Docker 版说明见：[Docker 版部署说明](docker-install.md)。
 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
 ```
 
+交互安装时：
+
+- Web 端口直接回车会随机分配可用端口。
+- 第一次输入面板密码时直接回车会随机生成密码，并保存到 `/etc/oci-lifecycle-platform/panel-password.txt`。
+
 如果已经克隆仓库，也可以执行：
 
 ```bash
@@ -245,6 +250,7 @@ sudo bash scripts/install.sh uninstall
 | `OCI_LIFECYCLE_REPO_URL` | Git 仓库地址 | `https://github.com/iKeilo/OCI-lifecycle-platform.git` |
 | `OCI_LIFECYCLE_BRANCH` | Git 分支 | `main` |
 | `PANEL_PASSWORD` | 非交互安装/改密码输入 | 空 |
+| `PANEL_PASSWORD_FILE` | 随机生成面板密码时的保存文件 | `$ENV_DIR/panel-password.txt` |
 | `WEB_PORT` | Web 监听端口 | `80` |
 | `USE_NGINX` | `true` / `false` / `auto` | `auto` |
 | `GO_PROXY` | Go module proxy | 空 |

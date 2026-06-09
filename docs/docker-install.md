@@ -44,17 +44,31 @@ sudo bash scripts/install.sh install
 - 初始化面板登录密码的 bcrypt hash。
 - 启动服务并检查 `/api/health`。
 
-默认访问地址：
+安装时会提示输入 Web 端口：
 
 ```text
-http://服务器IP:18080/
+Set web panel port, or press Enter for a random available port [current: 18080]:
 ```
 
-如果 `18080` 已经被占用，脚本会在未显式指定 `WEB_PORT` 时自动选择下一个可用端口，并在安装输出中显示最终地址。如果要手动指定端口：
+直接回车会随机分配一个可用端口，并在安装输出中显示最终地址。如果手动输入的端口已被占用，脚本会要求更换端口。如果要非交互指定端口：
 
 ```bash
 WEB_PORT=8088 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
 ```
+
+安装时也会提示输入面板密码：
+
+```text
+Set panel login password, or press Enter to generate one:
+```
+
+第一次输入直接回车会随机生成密码，并保存到：
+
+```text
+/etc/oci-lifecycle-platform/panel-password.txt
+```
+
+可通过 `PANEL_PASSWORD_FILE` 覆盖保存路径。
 
 ## 菜单模式
 

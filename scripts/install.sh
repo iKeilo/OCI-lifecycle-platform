@@ -18,6 +18,9 @@ DOCKER_ENV_FILE="${DOCKER_ENV_FILE:-$ENV_DIR/docker.env}"
 DOCKER_KEY_DIR="${OCI_KEY_DIR:-$ENV_DIR/keys}"
 DOCKER_IMAGE="${OCI_LIFECYCLE_IMAGE:-oci-lifecycle-platform:local}"
 DOCKER_WEB_PORT="${WEB_PORT_INPUT:-18080}"
+DOCKER_WEB_PORT_EXPLICIT=0
+[[ -n "$WEB_PORT_INPUT" ]] && DOCKER_WEB_PORT_EXPLICIT=1
+PANEL_PASSWORD_FILE="${PANEL_PASSWORD_FILE:-$ENV_DIR/panel-password.txt}"
 SERVICE_NAME="${SERVICE_NAME:-oci-lifecycle-platform}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 SERVICE_FILE="${SYSTEMD_DIR}/${SERVICE_NAME}.service"
@@ -63,6 +66,7 @@ Environment:
   A_SERIES_ORACLE_REPO_URL   Backward-compatible alias for OCI_LIFECYCLE_REPO_URL.
   A_SERIES_ORACLE_BRANCH     Backward-compatible alias for OCI_LIFECYCLE_BRANCH.
   PANEL_PASSWORD             Non-interactive install/change-password password input.
+  PANEL_PASSWORD_FILE        File used when the installer generates a random panel password.
   WEB_PORT                   web listen port. Docker default 18080, systemd default 80.
   USE_NGINX                  true, false, or auto. auto uses nginx only when already installed.
   GO_PROXY                   Optional Go module proxy, passed to GOPROXY.
@@ -334,13 +338,37 @@ read_password() {
     printf '%s\n' "$PANEL_PASSWORD"
     return
   fi
+
   local first second
-  read -r -s -p "Set panel login password: " first
+  if [[ ! -t 0 ]]; then
+    first="$(openssl rand -hex 12)"
+    save_generated_panel_password "$first"
+    printf '%s\n' "$first"
+    return
+  fi
+
+  read -r -s -p "Set panel login password, or press Enter to generate one: " first
   printf '\n'
+  if [[ -z "$first" ]]; then
+    first="$(openssl rand -hex 12)"
+    save_generated_panel_password "$first"
+    printf '%s\n' "$first"
+    return
+  fi
+
   read -r -s -p "Repeat panel login password: " second
   printf '\n'
   [[ "$first" == "$second" ]] || die "passwords do not match"
   printf '%s\n' "$first"
+}
+
+save_generated_panel_password() {
+  local password="$1"
+  mkdir -p "$(dirname "$PANEL_PASSWORD_FILE")"
+  chmod 700 "$(dirname "$PANEL_PASSWORD_FILE")"
+  printf '%s\n' "$password" >"$PANEL_PASSWORD_FILE"
+  chmod 600 "$PANEL_PASSWORD_FILE"
+  printf '[ok] random panel password generated and saved to %s\n' "$PANEL_PASSWORD_FILE" >&2
 }
 
 hash_password_with_source() {
@@ -747,6 +775,48 @@ docker_port_in_use() {
   return 1
 }
 
+docker_random_available_port() {
+  local candidate
+  for _ in $(seq 1 100); do
+    candidate=$((20000 + RANDOM % 25000))
+    if ! docker_port_in_use "$candidate"; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  for candidate in $(seq 20000 49151); do
+    if ! docker_port_in_use "$candidate"; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  die "cannot find a free random web port"
+}
+
+docker_prompt_web_port() {
+  if [[ -n "$WEB_PORT_INPUT" ]]; then
+    docker_env_set WEB_PORT "$DOCKER_WEB_PORT"
+    return
+  fi
+
+  [[ -t 0 ]] || return
+
+  local current selected
+  current="$(docker_env_get WEB_PORT)"
+  current="${current:-$DOCKER_WEB_PORT}"
+  read -r -p "Set web panel port, or press Enter for a random available port [current: ${current}]: " selected
+  if [[ -z "$selected" ]]; then
+    selected="$(docker_random_available_port)"
+    warn "using random WEB_PORT=${selected}"
+    DOCKER_WEB_PORT_EXPLICIT=0
+  else
+    [[ "$selected" =~ ^[0-9]+$ ]] || die "WEB_PORT must be a number"
+    (( selected >= 1 && selected <= 65535 )) || die "WEB_PORT must be between 1 and 65535"
+    DOCKER_WEB_PORT_EXPLICIT=1
+  fi
+  docker_env_set WEB_PORT "$selected"
+}
+
 docker_resolve_web_port() {
   local port candidate max
   port="$(docker_env_get WEB_PORT)"
@@ -762,7 +832,7 @@ docker_resolve_web_port() {
     return
   fi
 
-  if [[ -n "$WEB_PORT_INPUT" ]]; then
+  if [[ "$DOCKER_WEB_PORT_EXPLICIT" == "1" ]]; then
     die "WEB_PORT=${port} is already in use. Re-run with another port, for example: WEB_PORT=$((port + 1)) bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)"
   fi
 
@@ -829,6 +899,7 @@ docker_install_or_update() {
   docker_ensure_engine
   docker_sync_source
   docker_ensure_env_defaults
+  docker_prompt_web_port
   docker_resolve_web_port
   docker_build_image
   docker_ensure_panel_password "no"
