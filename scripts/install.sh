@@ -625,12 +625,12 @@ docker_current_source_dir() {
 }
 
 docker_install_base_packages() {
-  local packages=(git curl ca-certificates openssl tar)
+  local commands=(git curl openssl tar)
   local missing=()
-  local package
-  for package in "${packages[@]}"; do
-    if ! command -v "$package" >/dev/null 2>&1; then
-      missing+=("$package")
+  local command_name
+  for command_name in "${commands[@]}"; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+      missing+=("$command_name")
     fi
   done
   if [[ "${#missing[@]}" -eq 0 ]]; then
@@ -640,7 +640,7 @@ docker_install_base_packages() {
 
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update
-    apt-get install -y "${missing[@]}"
+    apt-get install -y ca-certificates "${missing[@]}"
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y "${missing[@]}"
   elif command -v yum >/dev/null 2>&1; then
