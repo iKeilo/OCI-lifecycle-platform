@@ -723,6 +723,61 @@ docker_compose() {
     -f "$DOCKER_COMPOSE_FILE" "$@"
 }
 
+docker_project_name() {
+  local project
+  project="$(docker_env_get COMPOSE_PROJECT_NAME)"
+  printf '%s\n' "${project:-$APP_NAME}"
+}
+
+docker_port_is_current_app() {
+  local port="$1"
+  local project
+  project="$(docker_project_name)"
+  docker ps --filter "name=^/${project}-app-1$" --format '{{.Ports}}' 2>/dev/null | grep -Eq "(0\.0\.0\.0|::|\[::\]):${port}->8080/tcp"
+}
+
+docker_port_in_use() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1 && ss -ltnH 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:|\\])${port}$"; then
+    return 0
+  fi
+  if docker ps --format '{{.Ports}}' 2>/dev/null | grep -Eq "(0\.0\.0\.0|::|\[::\]):${port}->"; then
+    return 0
+  fi
+  return 1
+}
+
+docker_resolve_web_port() {
+  local port candidate max
+  port="$(docker_env_get WEB_PORT)"
+  port="${port:-$DOCKER_WEB_PORT}"
+
+  if docker_port_is_current_app "$port"; then
+    docker_env_set WEB_PORT "$port"
+    return
+  fi
+
+  if ! docker_port_in_use "$port"; then
+    docker_env_set WEB_PORT "$port"
+    return
+  fi
+
+  if [[ -n "$WEB_PORT_INPUT" ]]; then
+    die "WEB_PORT=${port} is already in use. Re-run with another port, for example: WEB_PORT=$((port + 1)) bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)"
+  fi
+
+  max=$((port + 100))
+  for candidate in $(seq $((port + 1)) "$max") 19080 28080; do
+    if ! docker_port_in_use "$candidate"; then
+      warn "port ${port} is already in use; using WEB_PORT=${candidate} instead"
+      docker_env_set WEB_PORT "$candidate"
+      return
+    fi
+  done
+
+  die "cannot find a free web port after ${port}; set WEB_PORT explicitly"
+}
+
 docker_current_image() {
   local image
   image="$(docker_env_get OCI_LIFECYCLE_IMAGE)"
@@ -774,6 +829,7 @@ docker_install_or_update() {
   docker_ensure_engine
   docker_sync_source
   docker_ensure_env_defaults
+  docker_resolve_web_port
   docker_build_image
   docker_ensure_panel_password "no"
   docker_compose up -d app
@@ -783,6 +839,7 @@ docker_install_or_update() {
 docker_change_password() {
   [[ -f "$DOCKER_ENV_FILE" ]] || die "not installed: missing $DOCKER_ENV_FILE"
   docker_ensure_engine
+  docker_resolve_web_port
   docker_build_image
   docker_ensure_panel_password "yes"
   docker_compose up -d app
@@ -812,6 +869,7 @@ docker_configure_oci_env() {
 docker_start_app() {
   docker_ensure_engine
   [[ -f "$DOCKER_ENV_FILE" ]] || die "not installed: missing $DOCKER_ENV_FILE"
+  docker_resolve_web_port
   docker_compose up -d app
   docker_health_check
 }

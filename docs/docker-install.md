@@ -50,7 +50,7 @@ sudo bash scripts/install.sh install
 http://服务器IP:18080/
 ```
 
-如果要换端口：
+如果 `18080` 已经被占用，脚本会在未显式指定 `WEB_PORT` 时自动选择下一个可用端口，并在安装输出中显示最终地址。如果要手动指定端口：
 
 ```bash
 WEB_PORT=8088 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
