@@ -215,18 +215,23 @@ curl -fsS http://127.0.0.1:18080/api/health
 
 ## GitHub Packages 镜像
 
-如果希望直接使用 GitHub Packages / GHCR 已发布镜像，而不是在服务器本地构建：
+默认 Docker 一键安装会直接使用 GitHub Packages / GHCR 已发布镜像，而不是在服务器本地构建：
 
 ```bash
-OCI_LIFECYCLE_USE_PACKAGE=true \
 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
 ```
 
 指定版本镜像：
 
 ```bash
-OCI_LIFECYCLE_USE_PACKAGE=true \
 OCI_LIFECYCLE_IMAGE_TAG=1.0.0 \
+bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
+```
+
+如果需要回退为服务器本地构建：
+
+```bash
+OCI_LIFECYCLE_USE_PACKAGE=false \
 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
 ```
 

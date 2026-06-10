@@ -18,7 +18,7 @@ DOCKER_ENV_FILE="${DOCKER_ENV_FILE:-$ENV_DIR/docker.env}"
 DOCKER_KEY_DIR="${OCI_KEY_DIR:-$ENV_DIR/keys}"
 DOCKER_PACKAGE_IMAGE="${OCI_LIFECYCLE_PACKAGE_IMAGE:-ghcr.io/ikeilo/oci-lifecycle-platform}"
 DOCKER_PACKAGE_TAG="${OCI_LIFECYCLE_IMAGE_TAG:-latest}"
-DOCKER_USE_PACKAGE="${OCI_LIFECYCLE_USE_PACKAGE:-false}"
+DOCKER_USE_PACKAGE="${OCI_LIFECYCLE_USE_PACKAGE:-true}"
 if [[ "$DOCKER_USE_PACKAGE" == "true" && -z "${OCI_LIFECYCLE_IMAGE:-}" ]]; then
   DOCKER_IMAGE="${DOCKER_PACKAGE_IMAGE}:${DOCKER_PACKAGE_TAG}"
 else
@@ -77,8 +77,9 @@ Environment:
   WEB_PORT                   web listen port. Docker default 18080, systemd default 80.
   USE_NGINX                  true, false, or auto. auto uses nginx only when already installed.
   GO_PROXY                   Optional Go module proxy, passed to GOPROXY.
-  OCI_LIFECYCLE_USE_PACKAGE  Docker mode only. true pulls GHCR image instead of building locally.
-  OCI_LIFECYCLE_IMAGE        Docker image override. Default local build image or GHCR when package mode is enabled.
+  OCI_LIFECYCLE_USE_PACKAGE  Docker mode only. Default true pulls GHCR image instead of building locally.
+                             Set false to build from source on the server.
+  OCI_LIFECYCLE_IMAGE        Docker image override. Default GHCR image in package mode.
   OCI_LIFECYCLE_IMAGE_TAG    GHCR image tag for package mode, default latest.
   GO_ROOT                    Go toolchain directory, default APP_DIR/.toolchain/go.
   SYSTEMD_DIR                systemd unit directory, default /etc/systemd/system.

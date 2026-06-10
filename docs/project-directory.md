@@ -77,16 +77,16 @@
 
 ## 部署入口
 
-Docker 一键安装：
+Docker 一键安装，默认拉取 GitHub Packages / GHCR 镜像：
 
 ```bash
 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
 ```
 
-使用 GitHub Packages 镜像安装：
+指定 GitHub Packages 镜像版本安装：
 
 ```bash
-OCI_LIFECYCLE_USE_PACKAGE=true bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
+OCI_LIFECYCLE_IMAGE_TAG=1.0.15 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
 ```
 
 原生 Linux/systemd 一键安装：

@@ -53,17 +53,15 @@ https://github.com/iKeilo/OCI-lifecycle-platform/actions
 
 ## 使用 GitHub Packages 镜像安装
 
-默认一键脚本会下载源码并在服务器本地构建 Docker 镜像。若想直接使用 GHCR 已发布镜像：
+默认 Docker 一键安装会直接拉取 GHCR 已发布镜像，不再在服务器本地构建：
 
 ```bash
-OCI_LIFECYCLE_USE_PACKAGE=true \
 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
 ```
 
 指定版本：
 
 ```bash
-OCI_LIFECYCLE_USE_PACKAGE=true \
 OCI_LIFECYCLE_IMAGE_TAG=1.0.0 \
 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
 ```
@@ -73,6 +71,13 @@ bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/m
 ```bash
 OCI_LIFECYCLE_USE_PACKAGE=true \
 OCI_LIFECYCLE_IMAGE=ghcr.io/ikeilo/oci-lifecycle-platform:1.0.0 \
+bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
+```
+
+如果必须在服务器本地重新构建镜像，例如调试源码构建问题：
+
+```bash
+OCI_LIFECYCLE_USE_PACKAGE=false \
 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
 ```
 
@@ -90,4 +95,3 @@ echo "$GITHUB_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
 ```
 
 建议将仓库 Packages 设置为公开，方便一键安装脚本在新服务器上无需凭据拉取镜像。
-

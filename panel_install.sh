@@ -28,7 +28,8 @@ Environment:
   OCI_LIFECYCLE_BRANCH       GitHub branch, default main.
   OCI_LIFECYCLE_REPO_OWNER   GitHub owner, default iKeilo.
   OCI_LIFECYCLE_REPO_NAME    GitHub repo, default OCI-lifecycle-platform.
-  OCI_LIFECYCLE_USE_PACKAGE  true pulls ghcr.io/ikeilo/oci-lifecycle-platform instead of building locally.
+  OCI_LIFECYCLE_USE_PACKAGE  Docker mode defaults to true and pulls ghcr.io/ikeilo/oci-lifecycle-platform.
+                             Set false to build from source on the server.
   OCI_LIFECYCLE_IMAGE_TAG    GHCR image tag for package mode, default latest.
   PANEL_PASSWORD             Optional non-interactive panel password.
   PANEL_PASSWORD_FILE        File used when a random panel password is generated.
