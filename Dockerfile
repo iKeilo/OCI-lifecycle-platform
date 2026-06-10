@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim AS frontend
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS frontend
 WORKDIR /src
 
 COPY package.json package-lock.json ./
@@ -8,7 +8,7 @@ COPY index.html tsconfig.json tsconfig.app.json vite.config.ts ./
 COPY src ./src
 RUN npm run build
 
-FROM golang:1.26-bookworm AS backend
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS backend
 WORKDIR /src/backend
 
 ARG GO_PROXY
