@@ -19,7 +19,7 @@ bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/m
 交互安装时：
 
 - Web 端口直接回车会随机分配可用端口。
-- 第一次输入面板密码时直接回车会随机生成密码，并保存到 `/etc/oci-lifecycle-platform/panel-password.txt`。
+- 第一次输入面板密码时直接回车会随机生成密码，安装器会在终端打印一次，并保存到 `/etc/oci-lifecycle-platform/panel-password.txt`。
 - 安装脚本默认设置 `OCI_EXECUTION_MODE=oci`，Profile 测试会直接调用真实 OCI API。
 
 如果已经克隆仓库，也可以执行：

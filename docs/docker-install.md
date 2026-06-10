@@ -69,6 +69,8 @@ Set panel login password, or press Enter to generate one:
 /etc/oci-lifecycle-platform/panel-password.txt
 ```
 
+安装器也会在终端直接打印一次随机密码，便于马上登录面板。后续如果忘记密码，可以在服务器上查看上述文件，或使用 `change-password` 重新设置。
+
 可通过 `PANEL_PASSWORD_FILE` 覆盖保存路径。
 
 ## 菜单模式

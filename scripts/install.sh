@@ -384,6 +384,7 @@ save_generated_panel_password() {
   printf '%s\n' "$password" >"$PANEL_PASSWORD_FILE"
   chmod 600 "$PANEL_PASSWORD_FILE"
   printf '[ok] random panel password generated and saved to %s\n' "$PANEL_PASSWORD_FILE" >&2
+  printf '[ok] panel login password: %s\n' "$password" >&2
 }
 
 hash_password_with_source() {
