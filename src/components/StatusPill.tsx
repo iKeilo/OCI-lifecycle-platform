@@ -20,6 +20,8 @@ const statusLabels: Record<string, string> = {
   Running: "运行中",
   RUNNING: "执行中",
   Stopped: "已停止",
+  Terminating: "正在终止",
+  Terminated: "已终止",
   Success: "成功",
   SUCCESS: "成功",
   Warning: "警告",

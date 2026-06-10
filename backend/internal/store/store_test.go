@@ -68,10 +68,12 @@ func TestCompleteStopJobUpdatesInstanceStatus(t *testing.T) {
 func TestCompleteResizeJobUpdatesInstanceShape(t *testing.T) {
 	s := NewSeeded()
 	job, err := s.CreateInstanceActionTask("inst-prod-web-01", domain.InstanceActionRequest{
-		Action:         domain.InstanceActionResize,
-		TargetShape:    "VM.Standard3.Flex",
-		TargetOCPUs:    2,
-		TargetMemoryGB: 16,
+		Action:             domain.InstanceActionResize,
+		TargetShape:        "VM.Standard3.Flex",
+		TargetOCPUs:        2,
+		TargetMemoryGB:     16,
+		TargetBootVolumeGB: 110,
+		ExpandBootVolume:   true,
 	}, "tester")
 	if err != nil {
 		t.Fatal(err)
@@ -93,8 +95,23 @@ func TestCompleteResizeJobUpdatesInstanceShape(t *testing.T) {
 	if !ok {
 		t.Fatal("expected instance")
 	}
-	if instance.Shape != "VM.Standard3.Flex" || instance.OCPUs != 2 || instance.MemoryGB != 16 {
+	if instance.Shape != "VM.Standard3.Flex" || instance.OCPUs != 2 || instance.MemoryGB != 16 || instance.BootVolumeGB != 110 {
 		t.Fatalf("unexpected resized instance: %#v", instance)
+	}
+}
+
+func TestCreateResizeTaskRejectsBootVolumeShrink(t *testing.T) {
+	s := NewSeeded()
+	_, err := s.CreateInstanceActionTask("inst-prod-web-01", domain.InstanceActionRequest{
+		Action:             domain.InstanceActionResize,
+		TargetShape:        "VM.Standard3.Flex",
+		TargetOCPUs:        2,
+		TargetMemoryGB:     16,
+		TargetBootVolumeGB: 90,
+		ExpandBootVolume:   true,
+	}, "tester")
+	if err == nil {
+		t.Fatal("expected boot volume shrink to be rejected")
 	}
 }
 
@@ -187,6 +204,34 @@ func TestCreateInstanceTaskPersistsInstance(t *testing.T) {
 	}
 	if sink.instances[0].ID != result.Instance.ID || sink.instances[0].Status != domain.InstanceProvisioning {
 		t.Fatalf("unexpected persisted instance: %#v", sink.instances[0])
+	}
+	if result.Job.MaxRetries != 0 || result.Job.Input["retryMode"] != "none" {
+		t.Fatalf("expected no retry defaults to be preserved, got job=%#v", result.Job)
+	}
+}
+
+func TestCreateOCIInstanceLaunchTaskPersistsRetryPolicy(t *testing.T) {
+	s := NewSeeded()
+	job, err := s.CreateOCIInstanceLaunchTask(domain.CreateInstanceRequest{
+		Name:             "retry-created",
+		ProfileID:        "DEFAULT",
+		Region:           "ap-chuncheon-1",
+		CompartmentID:    "ocid1.tenancy.oc1..example",
+		Shape:            "VM.Standard.E3.Flex",
+		OCPUs:            1,
+		MemoryGB:         1,
+		BootVolumeGB:     50,
+		MaxRetries:       4,
+		RetryMode:        "count",
+		RetryMaxAttempts: 4,
+		RetryDelayMinSec: 5,
+		RetryDelayMaxSec: 9,
+	}, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.MaxRetries != 4 || job.Input["retryMode"] != "count" || job.Input["retryDelayMinSeconds"] != 5 || job.Input["retryDelayMaxSeconds"] != 9 {
+		t.Fatalf("unexpected retry policy input: %#v", job)
 	}
 }
 

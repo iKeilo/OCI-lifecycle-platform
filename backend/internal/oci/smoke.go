@@ -262,7 +262,7 @@ func SmokeE3FlexLifecycle(ctx context.Context, cfg ReadinessConfig, req E3FlexLi
 		ValidatedAt:   time.Now().UTC(),
 	}
 	if result.BootVolumeGB == 0 {
-		result.BootVolumeGB = 10
+		result.BootVolumeGB = 50
 	}
 	readiness := CheckReadiness(cfg)
 	if !readiness.Ready {
@@ -392,6 +392,17 @@ func SmokeE3FlexLifecycle(ctx context.Context, cfg ReadinessConfig, req E3FlexLi
 		{name: "downgrade", run: func() E3FlexLifecycleStep {
 			return e3ResizeStep(ctx, clients, result.InstanceID, "downgrade", 1, 1)
 		}},
+		{name: "boot-volume-expand-plus-10g", run: func() E3FlexLifecycleStep {
+			targetGB := result.BootVolumeGB + 10
+			step := e3BootVolumeExpandStep(ctx, clients, result.InstanceID, result.CompartmentID, result.AvailabilityDomain, targetGB)
+			if step.Verified {
+				result.BootVolumeGB = targetGB
+			}
+			return step
+		}},
+		{name: "boot-volume-shrink-minus-10g-rejected", run: func() E3FlexLifecycleStep {
+			return e3BootVolumeShrinkRejectedStep(ctx, clients, result.InstanceID, result.CompartmentID, result.AvailabilityDomain, result.BootVolumeGB-10)
+		}},
 	}
 	for _, item := range steps {
 		step := item.run()
@@ -451,7 +462,7 @@ func CleanupSmokeInstances(ctx context.Context, cfg ReadinessConfig, req SmokeCl
 
 	for _, instance := range response.Items {
 		displayName := stringValue(instance.DisplayName)
-		if !strings.HasPrefix(displayName, smokeDisplayNamePrefix) || instance.Id == nil || *instance.Id == "" {
+		if !isSmokeInstanceDisplayName(displayName) || instance.Id == nil || *instance.Id == "" {
 			continue
 		}
 		item := SmokeCleanupItem{
@@ -636,7 +647,7 @@ func terminateSmokeInstance(ctx context.Context, clients Clients, instanceID str
 	if err != nil {
 		return "", err
 	}
-	if response.Instance.DisplayName == nil || !strings.HasPrefix(*response.Instance.DisplayName, smokeDisplayNamePrefix) {
+	if response.Instance.DisplayName == nil || !isSmokeInstanceDisplayName(*response.Instance.DisplayName) {
 		return "", fmt.Errorf("refusing to terminate instance without smoke prefix: %s", stringValue(response.Instance.DisplayName))
 	}
 	terminateResponse, err := clients.Compute.TerminateInstance(ctx, core.TerminateInstanceRequest{
@@ -664,7 +675,7 @@ func e3PowerStep(ctx context.Context, clients Clients, instanceID string, name s
 		step.ErrorMessage = err.Error()
 		return step
 	}
-	state, err := waitInstanceState(ctx, clients, instanceID, 10*time.Minute, target)
+	state, err := waitInstanceState(ctx, clients, instanceID, 20*time.Minute, target)
 	step.State = string(state)
 	if err != nil {
 		step.ErrorCode = "OCI_WAIT_INSTANCE_STATE_FAILED"
@@ -747,6 +758,110 @@ func e3ReinstallStep(ctx context.Context, clients Clients, instanceID string, im
 	return step
 }
 
+func e3BootVolumeExpandStep(ctx context.Context, clients Clients, instanceID string, compartmentID string, availabilityDomain string, targetGB int64) E3FlexLifecycleStep {
+	step := E3FlexLifecycleStep{Name: "boot-volume-expand-plus-10g", Operation: fmt.Sprintf("UpdateBootVolume sizeInGBs=%d", targetGB)}
+	bootVolumeID, currentGB, err := e3BootVolumeForInstance(ctx, clients, instanceID, compartmentID, availabilityDomain)
+	if err != nil {
+		step.ErrorCode = "OCI_RESOLVE_BOOT_VOLUME_FAILED"
+		step.ErrorMessage = err.Error()
+		return step
+	}
+	if currentGB >= targetGB {
+		step.State = fmt.Sprintf("%dGB", currentGB)
+		step.Verified = true
+		return step
+	}
+	response, err := clients.Blockstorage.UpdateBootVolume(ctx, core.UpdateBootVolumeRequest{
+		BootVolumeId: common.String(bootVolumeID),
+		UpdateBootVolumeDetails: core.UpdateBootVolumeDetails{
+			SizeInGBs: common.Int64(targetGB),
+		},
+		OpcRequestId: requestID("codex-e3-boot-expand", instanceID),
+	})
+	if response.OpcRequestId != nil {
+		step.RequestID = *response.OpcRequestId
+	}
+	if err != nil {
+		step.ErrorCode = "OCI_UPDATE_BOOT_VOLUME_FAILED"
+		step.ErrorMessage = err.Error()
+		return step
+	}
+	if err := waitBootVolumeSize(ctx, clients, bootVolumeID, int(targetGB), 10*time.Minute); err != nil {
+		step.ErrorCode = "OCI_WAIT_BOOT_VOLUME_SIZE_FAILED"
+		step.ErrorMessage = err.Error()
+		return step
+	}
+	step.State = fmt.Sprintf("%dGB", targetGB)
+	step.Verified = true
+	return step
+}
+
+func e3BootVolumeShrinkRejectedStep(ctx context.Context, clients Clients, instanceID string, compartmentID string, availabilityDomain string, targetGB int64) E3FlexLifecycleStep {
+	step := E3FlexLifecycleStep{Name: "boot-volume-shrink-minus-10g-rejected", Operation: fmt.Sprintf("UpdateBootVolume sizeInGBs=%d expected rejection", targetGB)}
+	bootVolumeID, currentGB, err := e3BootVolumeForInstance(ctx, clients, instanceID, compartmentID, availabilityDomain)
+	if err != nil {
+		step.ErrorCode = "OCI_RESOLVE_BOOT_VOLUME_FAILED"
+		step.ErrorMessage = err.Error()
+		return step
+	}
+	if targetGB >= currentGB {
+		step.ErrorCode = "OCI_BOOT_VOLUME_SHRINK_TARGET_INVALID"
+		step.ErrorMessage = fmt.Sprintf("target %dGB must be less than current %dGB for shrink rejection test", targetGB, currentGB)
+		return step
+	}
+	response, err := clients.Blockstorage.UpdateBootVolume(ctx, core.UpdateBootVolumeRequest{
+		BootVolumeId: common.String(bootVolumeID),
+		UpdateBootVolumeDetails: core.UpdateBootVolumeDetails{
+			SizeInGBs: common.Int64(targetGB),
+		},
+		OpcRequestId: requestID("codex-e3-boot-shrink", instanceID),
+	})
+	if response.OpcRequestId != nil {
+		step.RequestID = *response.OpcRequestId
+	}
+	if err == nil {
+		step.ErrorCode = "OCI_BOOT_VOLUME_SHRINK_UNEXPECTEDLY_ACCEPTED"
+		step.ErrorMessage = "OCI accepted a boot volume size decrease; verify the volume manually before continuing"
+		return step
+	}
+	step.State = fmt.Sprintf("expected rejection current=%dGB target=%dGB", currentGB, targetGB)
+	step.Verified = true
+	return step
+}
+
+func e3BootVolumeForInstance(ctx context.Context, clients Clients, instanceID string, compartmentID string, availabilityDomain string) (string, int64, error) {
+	attachments, err := clients.Compute.ListBootVolumeAttachments(ctx, core.ListBootVolumeAttachmentsRequest{
+		AvailabilityDomain: common.String(availabilityDomain),
+		CompartmentId:      common.String(compartmentID),
+		InstanceId:         common.String(instanceID),
+		Limit:              common.Int(25),
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	bootVolumeID := ""
+	for _, attachment := range attachments.Items {
+		if attachment.LifecycleState == core.BootVolumeAttachmentLifecycleStateDetached || attachment.LifecycleState == core.BootVolumeAttachmentLifecycleStateDetaching {
+			continue
+		}
+		if attachment.BootVolumeId != nil && *attachment.BootVolumeId != "" {
+			bootVolumeID = *attachment.BootVolumeId
+			break
+		}
+	}
+	if bootVolumeID == "" {
+		return "", 0, fmt.Errorf("no attached boot volume found for instance %s", instanceID)
+	}
+	bootVolume, err := clients.Blockstorage.GetBootVolume(ctx, core.GetBootVolumeRequest{BootVolumeId: common.String(bootVolumeID)})
+	if err != nil {
+		return "", 0, err
+	}
+	if bootVolume.BootVolume.SizeInGBs == nil {
+		return bootVolumeID, 0, nil
+	}
+	return bootVolumeID, *bootVolume.BootVolume.SizeInGBs, nil
+}
+
 func ensureStopped(ctx context.Context, clients Clients, instanceID string, result *E3FlexLifecycleResult) {
 	if strings.TrimSpace(instanceID) == "" {
 		return
@@ -760,6 +875,22 @@ func ensureStopped(ctx context.Context, clients Clients, instanceID string, resu
 		result.FinalState = string(current.Instance.LifecycleState)
 		return
 	}
+	if current.Instance.LifecycleState == core.InstanceLifecycleStateStopping {
+		state, waitErr := waitInstanceState(ctx, clients, instanceID, 20*time.Minute, core.InstanceLifecycleStateStopped)
+		result.FinalState = string(state)
+		step := E3FlexLifecycleStep{
+			Name:      "ensure-stopped",
+			Operation: "WaitInstanceState STOPPED",
+			State:     string(state),
+			Verified:  waitErr == nil,
+		}
+		if waitErr != nil {
+			step.ErrorCode = "OCI_WAIT_INSTANCE_STATE_FAILED"
+			step.ErrorMessage = waitErr.Error()
+		}
+		result.Steps = append(result.Steps, step)
+		return
+	}
 	if current.Instance.LifecycleState == core.InstanceLifecycleStateTerminated || current.Instance.LifecycleState == core.InstanceLifecycleStateTerminating {
 		result.FinalState = string(current.Instance.LifecycleState)
 		return
@@ -767,4 +898,8 @@ func ensureStopped(ctx context.Context, clients Clients, instanceID string, resu
 	step := e3PowerStep(ctx, clients, instanceID, "ensure-stopped", core.InstanceActionActionSoftstop, core.InstanceLifecycleStateStopped)
 	result.FinalState = step.State
 	result.Steps = append(result.Steps, step)
+}
+
+func isSmokeInstanceDisplayName(displayName string) bool {
+	return strings.HasPrefix(displayName, smokeDisplayNamePrefix) || strings.HasPrefix(displayName, e3LifecycleDisplayNamePrefix)
 }

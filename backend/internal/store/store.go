@@ -18,17 +18,23 @@ var (
 )
 
 type Store struct {
-	mu          sync.RWMutex
-	now         func() time.Time
-	sink        PersistenceSink
-	nextInst    int
-	nextJob     int
-	nextRule    int
-	profiles    map[string]domain.Profile
-	instances   map[string]domain.Instance
-	templates   map[string]domain.InstanceTemplate
-	jobs        map[string]domain.Job
-	automations map[string]domain.AutomationRule
+	mu              sync.RWMutex
+	now             func() time.Time
+	sink            PersistenceSink
+	nextInst        int
+	nextJob         int
+	nextRule        int
+	nextNotice      int
+	nextAudit       int64
+	profiles        map[string]domain.Profile
+	instances       map[string]domain.Instance
+	templates       map[string]domain.InstanceTemplate
+	jobs            map[string]domain.Job
+	automations     map[string]domain.AutomationRule
+	notifications   map[string]domain.Notification
+	auditLogs       []domain.AuditLog
+	emailSettings   domain.EmailSettings
+	webhookSettings domain.WebhookSettings
 }
 
 type PersistenceSink interface {
@@ -46,17 +52,34 @@ type profileDeleteSink interface {
 	DeleteProfile(profileID string) error
 }
 
+type auditLogReader interface {
+	ListAuditLogs(filter domain.AuditLogFilter) ([]domain.AuditLog, error)
+}
+
+type settingsSink interface {
+	SaveEmailSettings(settings domain.EmailSettings) error
+	SaveWebhookSettings(settings domain.WebhookSettings) error
+}
+
+type settingsReader interface {
+	GetEmailSettings() (domain.EmailSettings, error)
+	GetWebhookSettings() (domain.WebhookSettings, error)
+}
+
 func New() *Store {
 	return &Store{
-		now:         time.Now,
-		nextInst:    1,
-		nextJob:     1,
-		nextRule:    1,
-		profiles:    map[string]domain.Profile{},
-		instances:   map[string]domain.Instance{},
-		templates:   map[string]domain.InstanceTemplate{},
-		jobs:        map[string]domain.Job{},
-		automations: map[string]domain.AutomationRule{},
+		now:           time.Now,
+		nextInst:      1,
+		nextJob:       1,
+		nextRule:      1,
+		nextNotice:    1,
+		nextAudit:     1,
+		profiles:      map[string]domain.Profile{},
+		instances:     map[string]domain.Instance{},
+		templates:     map[string]domain.InstanceTemplate{},
+		jobs:          map[string]domain.Job{},
+		automations:   map[string]domain.AutomationRule{},
+		notifications: map[string]domain.Notification{},
 	}
 }
 
@@ -312,6 +335,23 @@ func (s *Store) ReplaceJobs(jobs []domain.Job) {
 	s.jobs = next
 }
 
+func (s *Store) ReplaceAuditLogs(entries []domain.AuditLog) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.auditLogs = append([]domain.AuditLog(nil), entries...)
+	var maxID int64
+	for _, entry := range entries {
+		if entry.ID > maxID {
+			maxID = entry.ID
+		}
+	}
+	s.nextAudit = maxID + 1
+	if s.nextAudit < 1 {
+		s.nextAudit = 1
+	}
+}
+
 func (s *Store) RecoverRunnableJobs() ([]domain.Job, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -556,6 +596,229 @@ func (s *Store) ListJobs() []domain.Job {
 	return jobs
 }
 
+func (s *Store) ListAuditLogs(filter domain.AuditLogFilter) ([]domain.AuditLog, error) {
+	s.mu.RLock()
+	reader, useReader := s.sink.(auditLogReader)
+	entries := append([]domain.AuditLog(nil), s.auditLogs...)
+	s.mu.RUnlock()
+
+	if useReader {
+		return reader.ListAuditLogs(filter)
+	}
+	return filterAuditLogs(entries, filter), nil
+}
+
+func (s *Store) ListNotifications(unreadOnly bool) []domain.Notification {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	items := make([]domain.Notification, 0, len(s.notifications))
+	for _, notification := range s.notifications {
+		if unreadOnly && notification.Read {
+			continue
+		}
+		items = append(items, notification)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
+	return items
+}
+
+func (s *Store) CreateNotification(req domain.NotificationRequest, actor string) (domain.Notification, error) {
+	if strings.TrimSpace(req.Title) == "" {
+		return domain.Notification{}, fmt.Errorf("%w: notification title is required", ErrValidation)
+	}
+	if strings.TrimSpace(req.Message) == "" {
+		return domain.Notification{}, fmt.Errorf("%w: notification message is required", ErrValidation)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := s.now().UTC()
+	severity := req.Severity
+	if severity == "" {
+		severity = domain.NotificationInfo
+	}
+	notification := domain.Notification{
+		ID:             s.nextNotificationIDLocked(),
+		Title:          strings.TrimSpace(req.Title),
+		Message:        strings.TrimSpace(req.Message),
+		Severity:       severity,
+		Category:       defaultString(req.Category, "system"),
+		ResourceType:   strings.TrimSpace(req.ResourceType),
+		ResourceID:     strings.TrimSpace(req.ResourceID),
+		ProfileID:      strings.TrimSpace(req.ProfileID),
+		Region:         strings.TrimSpace(req.Region),
+		CompartmentID:  strings.TrimSpace(req.CompartmentID),
+		Sensitive:      req.Sensitive,
+		EmailRequested: req.EmailRequested,
+		CreatedBy:      defaultString(actor, "system"),
+		CreatedAt:      now,
+	}
+	s.notifications[notification.ID] = notification
+	return notification, nil
+}
+
+func (s *Store) UpdateNotificationEmailStatus(id string, sent bool, message string) (domain.Notification, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	notification, ok := s.notifications[id]
+	if !ok {
+		return domain.Notification{}, ErrNotFound
+	}
+	notification.EmailSent = sent
+	notification.EmailError = ""
+	if !sent {
+		notification.EmailError = strings.TrimSpace(message)
+	}
+	s.notifications[id] = notification
+	return notification, nil
+}
+
+func (s *Store) UpdateNotificationWebhookStatus(id string, sent bool, message string) (domain.Notification, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	notification, ok := s.notifications[id]
+	if !ok {
+		return domain.Notification{}, ErrNotFound
+	}
+	notification.WebhookSent = sent
+	notification.WebhookError = ""
+	if !sent {
+		notification.WebhookError = strings.TrimSpace(message)
+	}
+	s.notifications[id] = notification
+	return notification, nil
+}
+
+func (s *Store) MarkNotificationRead(id string) (domain.Notification, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	notification, ok := s.notifications[id]
+	if !ok {
+		return domain.Notification{}, ErrNotFound
+	}
+	if !notification.Read {
+		now := s.now().UTC()
+		notification.Read = true
+		notification.ReadAt = &now
+		s.notifications[id] = notification
+	}
+	return notification, nil
+}
+
+func (s *Store) MarkAllNotificationsRead() []domain.Notification {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now().UTC()
+	items := make([]domain.Notification, 0, len(s.notifications))
+	for id, notification := range s.notifications {
+		if !notification.Read {
+			notification.Read = true
+			notification.ReadAt = &now
+			s.notifications[id] = notification
+		}
+		items = append(items, notification)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
+	return items
+}
+
+func (s *Store) GetEmailSettings() domain.EmailSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return redactEmailSettings(s.emailSettings)
+}
+
+func (s *Store) GetEmailSettingsForSend() domain.EmailSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.emailSettings
+}
+
+func (s *Store) SetEmailSettings(settings domain.EmailSettings) (domain.EmailSettings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if settings.Port == 0 {
+		settings.Port = 587
+	}
+	if strings.TrimSpace(settings.Password) == "" && s.emailSettings.PasswordSet {
+		settings.Password = s.emailSettings.Password
+		settings.PasswordSet = true
+	} else if strings.TrimSpace(settings.Password) != "" {
+		settings.PasswordSet = true
+	}
+	settings.Host = strings.TrimSpace(settings.Host)
+	settings.Username = strings.TrimSpace(settings.Username)
+	settings.From = strings.TrimSpace(settings.From)
+	settings.To = cleanRecipients(settings.To)
+	s.emailSettings = settings
+	if sink, ok := s.sink.(settingsSink); ok {
+		if err := sink.SaveEmailSettings(s.emailSettings); err != nil {
+			return domain.EmailSettings{}, err
+		}
+	}
+	return redactEmailSettings(s.emailSettings), nil
+}
+
+func (s *Store) GetWebhookSettings() domain.WebhookSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return redactWebhookSettings(s.webhookSettings)
+}
+
+func (s *Store) GetWebhookSettingsForSend() domain.WebhookSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.webhookSettings
+}
+
+func (s *Store) SetWebhookSettings(settings domain.WebhookSettings) (domain.WebhookSettings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	settings.URL = strings.TrimSpace(settings.URL)
+	if settings.Headers == nil {
+		settings.Headers = map[string]string{}
+	}
+	if strings.TrimSpace(settings.Secret) == "" && s.webhookSettings.SecretSet {
+		settings.Secret = s.webhookSettings.Secret
+		settings.SecretSet = true
+	} else if strings.TrimSpace(settings.Secret) != "" {
+		settings.SecretSet = true
+	}
+	s.webhookSettings = settings
+	if sink, ok := s.sink.(settingsSink); ok {
+		if err := sink.SaveWebhookSettings(s.webhookSettings); err != nil {
+			return domain.WebhookSettings{}, err
+		}
+	}
+	return redactWebhookSettings(s.webhookSettings), nil
+}
+
+func (s *Store) LoadPersistedSettings() error {
+	s.mu.RLock()
+	reader, ok := s.sink.(settingsReader)
+	s.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	emailSettings, err := reader.GetEmailSettings()
+	if err != nil {
+		return err
+	}
+	webhookSettings, err := reader.GetWebhookSettings()
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if emailSettings.Host != "" || emailSettings.Enabled || emailSettings.PasswordSet {
+		s.emailSettings = emailSettings
+	}
+	if webhookSettings.URL != "" || webhookSettings.Enabled || webhookSettings.SecretSet {
+		s.webhookSettings = webhookSettings
+	}
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *Store) GetJob(id string) (domain.Job, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -636,6 +899,7 @@ func (s *Store) CompleteJob(id string, result map[string]any) (domain.Job, error
 	job.Status = domain.JobSuccess
 	job.Result = result
 	job.FinishedAt = &now
+	redactSensitiveJobInput(&job)
 	if job.ResourceType == "instance" {
 		if operation, _ := job.Input["operation"].(string); operation == "launch" {
 			instance := instanceFromLaunchJob(job, result, now)
@@ -690,6 +954,7 @@ func (s *Store) FailJob(id, code, message string) (domain.Job, error) {
 	job.ErrorCode = defaultString(code, "JOB_FAILED")
 	job.ErrorMessage = defaultString(message, "job failed")
 	job.FinishedAt = &now
+	redactSensitiveJobInput(&job)
 	return s.saveJobLocked(job)
 }
 
@@ -710,6 +975,7 @@ func (s *Store) CancelJob(id string) (domain.Job, error) {
 	job.ErrorCode = "JOB_CANCELLED"
 	job.ErrorMessage = "cancelled by user"
 	job.FinishedAt = &now
+	redactSensitiveJobInput(&job)
 	return s.saveJobLocked(job)
 }
 
@@ -776,17 +1042,28 @@ func (s *Store) CreateIPTask(instanceID string, req domain.IPTaskRequest, actor 
 	job.CompartmentID = instance.CompartmentID
 	job.MaxRetries = 2
 	job.Input = map[string]any{
-		"operation":        "ip-management",
-		"mode":             req.Mode,
-		"reservedPublicIp": req.ReservedPublicIP,
-		"dnsLabel":         req.DNSLabel,
-		"vnicId":           req.VNICID,
-		"note":             req.Note,
-		"enableIpv6":       req.EnableIPv6,
-		"snapshotBefore":   req.SnapshotBefore,
-		"instanceName":     instance.Name,
-		"currentPublicIp":  instance.PrimaryIP,
-		"currentPrivateIp": instance.PrivateIP,
+		"operation":                "ip-management",
+		"mode":                     req.Mode,
+		"reservedPublicIp":         req.ReservedPublicIP,
+		"dnsLabel":                 req.DNSLabel,
+		"vnicId":                   req.VNICID,
+		"note":                     req.Note,
+		"enableIpv6":               req.EnableIPv6,
+		"autoConfigureIpv6":        req.AutoConfigureIPv6,
+		"ipv6Strategy":             defaultString(req.IPv6Strategy, "assign_only"),
+		"networkChangeMode":        defaultString(req.NetworkChangeMode, req.IPv6Strategy),
+		"routeTableMode":           req.RouteTableMode,
+		"securityMode":             req.SecurityMode,
+		"allowIrreversibleVcnIpv6": req.AllowIrreversibleVCNIPv6,
+		"allowPublicIpv4Change":    req.AllowPublicIPv4Change,
+		"openSshIpv6":              req.OpenSSHIPv6,
+		"openHttpIpv6":             req.OpenHTTPIPv6,
+		"openHttpsIpv6":            req.OpenHTTPSIPv6,
+		"mayReplacePublicIPv4":     req.AllowPublicIPv4Change || strings.EqualFold(req.NetworkChangeMode, "replace_public_path"),
+		"snapshotBefore":           req.SnapshotBefore,
+		"instanceName":             instance.Name,
+		"currentPublicIp":          instance.PrimaryIP,
+		"currentPrivateIp":         instance.PrivateIP,
 	}
 	return s.saveJobLocked(job)
 }
@@ -818,16 +1095,27 @@ func (s *Store) CreateOCIIPTask(instanceID string, req domain.IPTaskRequest, act
 	job.CompartmentID = compartmentID
 	job.MaxRetries = 0
 	job.Input = map[string]any{
-		"operation":        "ip-management",
-		"mode":             req.Mode,
-		"reservedPublicIp": req.ReservedPublicIP,
-		"dnsLabel":         req.DNSLabel,
-		"vnicId":           req.VNICID,
-		"note":             req.Note,
-		"enableIpv6":       req.EnableIPv6,
-		"snapshotBefore":   req.SnapshotBefore,
-		"ociInstanceId":    instanceID,
-		"executionMode":    "oci",
+		"operation":                "ip-management",
+		"mode":                     req.Mode,
+		"reservedPublicIp":         req.ReservedPublicIP,
+		"dnsLabel":                 req.DNSLabel,
+		"vnicId":                   req.VNICID,
+		"note":                     req.Note,
+		"enableIpv6":               req.EnableIPv6,
+		"autoConfigureIpv6":        req.AutoConfigureIPv6,
+		"ipv6Strategy":             defaultString(req.IPv6Strategy, "assign_only"),
+		"networkChangeMode":        defaultString(req.NetworkChangeMode, req.IPv6Strategy),
+		"routeTableMode":           req.RouteTableMode,
+		"securityMode":             req.SecurityMode,
+		"allowIrreversibleVcnIpv6": req.AllowIrreversibleVCNIPv6,
+		"allowPublicIpv4Change":    req.AllowPublicIPv4Change,
+		"openSshIpv6":              req.OpenSSHIPv6,
+		"openHttpIpv6":             req.OpenHTTPIPv6,
+		"openHttpsIpv6":            req.OpenHTTPSIPv6,
+		"mayReplacePublicIPv4":     req.AllowPublicIPv4Change || strings.EqualFold(req.NetworkChangeMode, "replace_public_path"),
+		"snapshotBefore":           req.SnapshotBefore,
+		"ociInstanceId":            instanceID,
+		"executionMode":            "oci",
 	}
 	return s.saveJobLocked(job)
 }
@@ -866,6 +1154,14 @@ func (s *Store) CreateInstanceActionTask(instanceID string, req domain.InstanceA
 		if req.TargetMemoryGB <= 0 {
 			return domain.Job{}, fmt.Errorf("%w: targetMemoryGb must be greater than zero", ErrValidation)
 		}
+		if req.ExpandBootVolume {
+			if req.TargetBootVolumeGB <= 0 {
+				return domain.Job{}, fmt.Errorf("%w: targetBootVolumeGb must be greater than zero", ErrValidation)
+			}
+			if req.TargetBootVolumeGB < instance.BootVolumeGB {
+				return domain.Job{}, fmt.Errorf("%w: boot volume cannot be decreased", ErrValidation)
+			}
+		}
 	}
 
 	job := s.newJobLocked(instanceActionJobType(req.Action), "instance", instance.ID, actor)
@@ -874,19 +1170,29 @@ func (s *Store) CreateInstanceActionTask(instanceID string, req domain.InstanceA
 	job.CompartmentID = instance.CompartmentID
 	job.MaxRetries = 1
 	job.Input = map[string]any{
-		"action":             string(req.Action),
-		"graceful":           req.Graceful,
-		"preserveBootVolume": req.PreserveBootVolume,
-		"targetShape":        req.TargetShape,
-		"targetOcpus":        req.TargetOCPUs,
-		"targetMemoryGb":     req.TargetMemoryGB,
-		"snapshotBefore":     req.SnapshotBefore,
-		"note":               req.Note,
-		"instanceName":       instance.Name,
-		"currentStatus":      instance.Status,
-		"currentShape":       instance.Shape,
-		"currentOcpus":       instance.OCPUs,
-		"currentMemoryGb":    instance.MemoryGB,
+		"action":              string(req.Action),
+		"graceful":            req.Graceful,
+		"preserveBootVolume":  req.PreserveBootVolume,
+		"targetShape":         req.TargetShape,
+		"targetOcpus":         req.TargetOCPUs,
+		"targetMemoryGb":      req.TargetMemoryGB,
+		"targetBootVolumeGb":  req.TargetBootVolumeGB,
+		"expandBootVolume":    req.ExpandBootVolume,
+		"currentBootVolumeGb": instance.BootVolumeGB,
+		"snapshotBefore":      req.SnapshotBefore,
+		"note":                req.Note,
+		"instanceName":        instance.Name,
+		"currentStatus":       instance.Status,
+		"currentShape":        instance.Shape,
+		"currentOcpus":        instance.OCPUs,
+		"currentMemoryGb":     instance.MemoryGB,
+	}
+	if req.Action == domain.InstanceActionTerminate {
+		instance.Status = domain.InstanceTerminating
+		instance.LastSyncedAt = s.now().UTC()
+		if err := s.saveInstanceLocked(instance); err != nil {
+			return domain.Job{}, err
+		}
 	}
 	return s.saveJobLocked(job)
 }
@@ -910,6 +1216,9 @@ func (s *Store) CreateOCIInstanceLaunchTask(req domain.CreateInstanceRequest, ac
 	if req.MaxRetries < 0 {
 		return domain.Job{}, fmt.Errorf("%w: maxRetries cannot be negative", ErrValidation)
 	}
+	if err := validateRetryPolicy(req); err != nil {
+		return domain.Job{}, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -927,30 +1236,37 @@ func (s *Store) CreateOCIInstanceLaunchTask(req domain.CreateInstanceRequest, ac
 	job.CompartmentID = req.CompartmentID
 	job.MaxRetries = req.MaxRetries
 	job.Input = map[string]any{
-		"operation":        "launch",
-		"name":             req.Name,
-		"profileId":        job.ProfileID,
-		"region":           req.Region,
-		"compartment":      req.Compartment,
-		"compartmentId":    req.CompartmentID,
-		"availabilityAd":   req.AvailabilityAD,
-		"templateId":       req.TemplateID,
-		"imageId":          req.ImageID,
-		"shape":            req.Shape,
-		"ocpus":            req.OCPUs,
-		"memoryGb":         req.MemoryGB,
-		"bootVolumeGb":     req.BootVolumeGB,
-		"assignPublicIp":   req.AssignPublicIP,
-		"enableIpv6":       req.EnableIPv6,
-		"reservedPublicIp": req.ReservedPublicIP,
-		"vcnId":            req.VCNID,
-		"subnetId":         req.SubnetID,
-		"sshKey":           req.SSHKey,
-		"cloudInit":        req.CloudInit,
-		"tags":             req.Tags,
-		"requireApproval":  req.RequireApproval,
-		"snapshotBefore":   req.SnapshotBefore,
-		"executionMode":    "oci",
+		"operation":            "launch",
+		"name":                 req.Name,
+		"profileId":            job.ProfileID,
+		"region":               req.Region,
+		"compartment":          req.Compartment,
+		"compartmentId":        req.CompartmentID,
+		"availabilityAd":       req.AvailabilityAD,
+		"templateId":           req.TemplateID,
+		"imageId":              req.ImageID,
+		"shape":                req.Shape,
+		"ocpus":                req.OCPUs,
+		"memoryGb":             req.MemoryGB,
+		"bootVolumeGb":         req.BootVolumeGB,
+		"assignPublicIp":       req.AssignPublicIP,
+		"enableIpv6":           req.EnableIPv6,
+		"reservedPublicIp":     req.ReservedPublicIP,
+		"vcnId":                req.VCNID,
+		"subnetId":             req.SubnetID,
+		"sshKey":               req.SSHKey,
+		"cloudInit":            req.CloudInit,
+		"tags":                 req.Tags,
+		"retryMode":            normalizedRetryMode(req),
+		"retryMaxAttempts":     effectiveRetryMaxAttempts(req),
+		"retryDelayMinSeconds": req.RetryDelayMinSec,
+		"retryDelayMaxSeconds": req.RetryDelayMaxSec,
+		"requireApproval":      req.RequireApproval,
+		"snapshotBefore":       req.SnapshotBefore,
+		"generateRootPassword": req.GenerateRootPassword,
+		"notifyRootPassword":   req.NotifyRootPassword,
+		"cloudInitSensitive":   req.GenerateRootPassword,
+		"executionMode":        "oci",
 	}
 	return s.saveJobLocked(job)
 }
@@ -974,6 +1290,9 @@ func (s *Store) CreateOCIInstanceActionTask(instanceID string, req domain.Instan
 		}
 		if req.TargetMemoryGB <= 0 {
 			return domain.Job{}, fmt.Errorf("%w: targetMemoryGb must be greater than zero", ErrValidation)
+		}
+		if req.ExpandBootVolume && req.TargetBootVolumeGB <= 0 {
+			return domain.Job{}, fmt.Errorf("%w: targetBootVolumeGb must be greater than zero", ErrValidation)
 		}
 	}
 
@@ -999,10 +1318,21 @@ func (s *Store) CreateOCIInstanceActionTask(instanceID string, req domain.Instan
 		"targetShape":        req.TargetShape,
 		"targetOcpus":        req.TargetOCPUs,
 		"targetMemoryGb":     req.TargetMemoryGB,
+		"targetBootVolumeGb": req.TargetBootVolumeGB,
+		"expandBootVolume":   req.ExpandBootVolume,
 		"snapshotBefore":     req.SnapshotBefore,
 		"note":               req.Note,
 		"ociInstanceId":      instanceID,
 		"executionMode":      "oci",
+	}
+	if req.Action == domain.InstanceActionTerminate {
+		if instance, ok := s.instances[instanceID]; ok {
+			instance.Status = domain.InstanceTerminating
+			instance.LastSyncedAt = s.now().UTC()
+			if err := s.saveInstanceLocked(instance); err != nil {
+				return domain.Job{}, err
+			}
+		}
 	}
 	return s.saveJobLocked(job)
 }
@@ -1034,6 +1364,9 @@ func (s *Store) CreateInstanceTask(req domain.CreateInstanceRequest, actor strin
 	}
 	if req.MaxRetries < 0 {
 		return domain.CreateInstanceResponse{}, fmt.Errorf("%w: maxRetries cannot be negative", ErrValidation)
+	}
+	if err := validateRetryPolicy(req); err != nil {
+		return domain.CreateInstanceResponse{}, err
 	}
 
 	s.mu.Lock()
@@ -1081,32 +1414,33 @@ func (s *Store) CreateInstanceTask(req domain.CreateInstanceRequest, actor strin
 	job.Region = instance.Region
 	job.CompartmentID = instance.CompartmentID
 	job.MaxRetries = req.MaxRetries
-	if job.MaxRetries == 0 {
-		job.MaxRetries = 2
-	}
 	job.Input = map[string]any{
-		"name":             req.Name,
-		"profileId":        profileID,
-		"region":           instance.Region,
-		"compartment":      instance.Compartment,
-		"compartmentId":    instance.CompartmentID,
-		"availabilityAd":   req.AvailabilityAD,
-		"templateId":       req.TemplateID,
-		"imageId":          req.ImageID,
-		"shape":            req.Shape,
-		"ocpus":            req.OCPUs,
-		"memoryGb":         req.MemoryGB,
-		"bootVolumeGb":     req.BootVolumeGB,
-		"assignPublicIp":   req.AssignPublicIP,
-		"enableIpv6":       req.EnableIPv6,
-		"reservedPublicIp": req.ReservedPublicIP,
-		"vcnId":            req.VCNID,
-		"subnetId":         req.SubnetID,
-		"sshKey":           req.SSHKey,
-		"cloudInit":        req.CloudInit,
-		"tags":             req.Tags,
-		"requireApproval":  req.RequireApproval,
-		"snapshotBefore":   req.SnapshotBefore,
+		"name":                 req.Name,
+		"profileId":            profileID,
+		"region":               instance.Region,
+		"compartment":          instance.Compartment,
+		"compartmentId":        instance.CompartmentID,
+		"availabilityAd":       req.AvailabilityAD,
+		"templateId":           req.TemplateID,
+		"imageId":              req.ImageID,
+		"shape":                req.Shape,
+		"ocpus":                req.OCPUs,
+		"memoryGb":             req.MemoryGB,
+		"bootVolumeGb":         req.BootVolumeGB,
+		"assignPublicIp":       req.AssignPublicIP,
+		"enableIpv6":           req.EnableIPv6,
+		"reservedPublicIp":     req.ReservedPublicIP,
+		"vcnId":                req.VCNID,
+		"subnetId":             req.SubnetID,
+		"sshKey":               req.SSHKey,
+		"cloudInit":            req.CloudInit,
+		"tags":                 req.Tags,
+		"retryMode":            normalizedRetryMode(req),
+		"retryMaxAttempts":     effectiveRetryMaxAttempts(req),
+		"retryDelayMinSeconds": req.RetryDelayMinSec,
+		"retryDelayMaxSeconds": req.RetryDelayMaxSec,
+		"requireApproval":      req.RequireApproval,
+		"snapshotBefore":       req.SnapshotBefore,
 	}
 	if _, err := s.saveJobLocked(job); err != nil {
 		return domain.CreateInstanceResponse{}, err
@@ -1211,12 +1545,6 @@ func (s *Store) newJobLocked(typ, resourceType, resourceID, actor string) domain
 
 func (s *Store) saveJobLocked(job domain.Job) (domain.Job, error) {
 	s.jobs[job.ID] = job
-	if s.sink == nil {
-		return job, nil
-	}
-	if err := s.sink.SaveJob(job); err != nil {
-		return job, err
-	}
 	entry := domain.AuditLog{
 		Actor:            defaultString(job.CreatedBy, "system"),
 		Action:           "job." + string(job.Status),
@@ -1233,7 +1561,12 @@ func (s *Store) saveJobLocked(job domain.Job) (domain.Job, error) {
 		ErrorMessage:     job.ErrorMessage,
 		CreatedAt:        s.now().UTC(),
 	}
-	if err := s.sink.RecordAudit(entry); err != nil {
+	if s.sink != nil {
+		if err := s.sink.SaveJob(job); err != nil {
+			return job, err
+		}
+	}
+	if err := s.recordAuditLocked(entry); err != nil {
 		return job, err
 	}
 	return job, nil
@@ -1322,7 +1655,9 @@ func statusFromOCIState(value string, fallback domain.InstanceStatus) domain.Ins
 		return domain.InstanceRunning
 	case "STOPPED", "STOPPING":
 		return domain.InstanceStopped
-	case "TERMINATED", "TERMINATING":
+	case "TERMINATING":
+		return domain.InstanceTerminating
+	case "TERMINATED":
 		return domain.InstanceTerminated
 	case "PROVISIONING", "STARTING", "MOVING":
 		return domain.InstanceProvisioning
@@ -1395,6 +1730,9 @@ func applyInstanceAction(instance *domain.Instance, action string, input map[str
 		if memoryGB, ok := intFromAny(input["targetMemoryGb"]); ok && memoryGB > 0 {
 			instance.MemoryGB = memoryGB
 		}
+		if bootVolumeGB, ok := intFromAny(input["targetBootVolumeGb"]); ok && bootVolumeGB > instance.BootVolumeGB {
+			instance.BootVolumeGB = bootVolumeGB
+		}
 		instance.Status = domain.InstanceRunning
 	}
 }
@@ -1440,6 +1778,44 @@ func boolFromMap(in map[string]any, key string) bool {
 		return value
 	}
 	return false
+}
+
+func validateRetryPolicy(req domain.CreateInstanceRequest) error {
+	if req.RetryDelayMinSec < 0 || req.RetryDelayMaxSec < 0 {
+		return fmt.Errorf("%w: retry delay cannot be negative", ErrValidation)
+	}
+	if req.RetryDelayMaxSec > 0 && req.RetryDelayMaxSec < req.RetryDelayMinSec {
+		return fmt.Errorf("%w: retryDelayMaxSeconds cannot be less than retryDelayMinSeconds", ErrValidation)
+	}
+	switch normalizedRetryMode(req) {
+	case "none", "success_stop":
+		return nil
+	case "count":
+		if effectiveRetryMaxAttempts(req) <= 0 {
+			return fmt.Errorf("%w: retryMaxAttempts must be greater than zero", ErrValidation)
+		}
+		return nil
+	default:
+		return fmt.Errorf("%w: unsupported retryMode", ErrValidation)
+	}
+}
+
+func normalizedRetryMode(req domain.CreateInstanceRequest) string {
+	mode := strings.TrimSpace(req.RetryMode)
+	if mode == "" {
+		if req.MaxRetries > 0 {
+			return "count"
+		}
+		return "none"
+	}
+	return mode
+}
+
+func effectiveRetryMaxAttempts(req domain.CreateInstanceRequest) int {
+	if req.RetryMaxAttempts > 0 {
+		return req.RetryMaxAttempts
+	}
+	return req.MaxRetries
 }
 
 func defaultInt(value, fallback int) int {
@@ -1526,6 +1902,68 @@ func cloneMap(in map[string]any) map[string]any {
 	return out
 }
 
+func (s *Store) recordAuditLocked(entry domain.AuditLog) error {
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = s.now().UTC()
+	}
+	if entry.ID == 0 {
+		entry.ID = s.nextAuditIDLocked()
+	}
+	s.auditLogs = append(s.auditLogs, entry)
+	if len(s.auditLogs) > 1000 {
+		s.auditLogs = append([]domain.AuditLog(nil), s.auditLogs[len(s.auditLogs)-1000:]...)
+	}
+	if s.sink == nil {
+		return nil
+	}
+	return s.sink.RecordAudit(entry)
+}
+
+func filterAuditLogs(entries []domain.AuditLog, filter domain.AuditLogFilter) []domain.AuditLog {
+	limit := filter.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	status := strings.ToLower(strings.TrimSpace(filter.Status))
+	out := make([]domain.AuditLog, 0, min(limit, len(entries)))
+	sort.Slice(entries, func(i, j int) bool { return entries[i].CreatedAt.After(entries[j].CreatedAt) })
+	for _, entry := range entries {
+		if !auditMatches(entry.Actor, filter.Actor) ||
+			!auditMatches(entry.Action, filter.Action) ||
+			!auditMatches(entry.ResourceType, filter.ResourceType) ||
+			!auditMatches(entry.ResourceID, filter.ResourceID) ||
+			!auditMatches(entry.ProfileID, filter.ProfileID) {
+			continue
+		}
+		if status == "failed" && entry.ErrorCode == "" && entry.ErrorMessage == "" {
+			continue
+		}
+		if status == "success" && (entry.ErrorCode != "" || entry.ErrorMessage != "") {
+			continue
+		}
+		out = append(out, entry)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func auditMatches(value, want string) bool {
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(value), strings.ToLower(want))
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func (s *Store) nextJobIDLocked() string {
 	id := fmt.Sprintf("JOB-%d", s.nextJob)
 	s.nextJob++
@@ -1579,6 +2017,59 @@ func (s *Store) nextRuleIDLocked() string {
 	id := fmt.Sprintf("auto-%d", s.nextRule)
 	s.nextRule++
 	return id
+}
+
+func (s *Store) nextNotificationIDLocked() string {
+	id := fmt.Sprintf("notice-%d", s.nextNotice)
+	s.nextNotice++
+	return id
+}
+
+func (s *Store) nextAuditIDLocked() int64 {
+	id := s.nextAudit
+	s.nextAudit++
+	return id
+}
+
+func redactEmailSettings(settings domain.EmailSettings) domain.EmailSettings {
+	passwordSet := settings.PasswordSet || strings.TrimSpace(settings.Password) != ""
+	settings.Password = ""
+	settings.PasswordSet = passwordSet
+	return settings
+}
+
+func redactWebhookSettings(settings domain.WebhookSettings) domain.WebhookSettings {
+	secretSet := settings.SecretSet || strings.TrimSpace(settings.Secret) != ""
+	settings.Secret = ""
+	settings.SecretSet = secretSet
+	return settings
+}
+
+func cleanRecipients(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" || seen[strings.ToLower(part)] {
+				continue
+			}
+			seen[strings.ToLower(part)] = true
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func redactSensitiveJobInput(job *domain.Job) {
+	if job == nil || job.Input == nil {
+		return
+	}
+	if !boolFromMap(job.Input, "cloudInitSensitive") {
+		return
+	}
+	delete(job.Input, "cloudInit")
+	job.Input["cloudInitRedacted"] = true
 }
 
 func defaultString(value, fallback string) string {

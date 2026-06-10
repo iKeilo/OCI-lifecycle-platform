@@ -2,16 +2,21 @@ package api
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"a-series-oracle/backend/internal/auth"
 	"a-series-oracle/backend/internal/domain"
+	"a-series-oracle/backend/internal/notify"
 	"a-series-oracle/backend/internal/oci"
 	"a-series-oracle/backend/internal/store"
 )
@@ -103,6 +108,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/jobs/{id}", s.handleJob)
 	s.mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancelJob)
 	s.mux.HandleFunc("POST /api/jobs/{id}/retry", s.handleRetryJob)
+	s.mux.HandleFunc("GET /api/notifications", s.handleNotifications)
+	s.mux.HandleFunc("POST /api/notifications/{id}/read", s.handleReadNotification)
+	s.mux.HandleFunc("POST /api/notifications/read-all", s.handleReadAllNotifications)
+	s.mux.HandleFunc("GET /api/audit-logs", s.handleAuditLogs)
+	s.mux.HandleFunc("GET /api/email/settings", s.handleEmailSettings)
+	s.mux.HandleFunc("PUT /api/email/settings", s.handleUpdateEmailSettings)
+	s.mux.HandleFunc("POST /api/email/test", s.handleEmailTest)
+	s.mux.HandleFunc("GET /api/webhook/settings", s.handleWebhookSettings)
+	s.mux.HandleFunc("PUT /api/webhook/settings", s.handleUpdateWebhookSettings)
+	s.mux.HandleFunc("POST /api/webhook/test", s.handleWebhookTest)
 	s.mux.HandleFunc("GET /api/automations", s.handleAutomations)
 	s.mux.HandleFunc("POST /api/automations/tasks", s.handleCreateAutomationTask)
 }
@@ -202,7 +217,12 @@ func (s *Server) handleOCIE2MicroSmoke(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
 		return
 	}
-	result := oci.SmokeCreateDeleteE2Micro(r.Context(), s.ociReadiness, req)
+	cfg, _, err := s.resolveOCIConfig("", "")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "OCI_PROFILE_RESOLVE_FAILED", err.Error())
+		return
+	}
+	result := oci.SmokeCreateDeleteE2Micro(r.Context(), cfg, req)
 	if !result.Verified {
 		writeJSON(w, http.StatusBadGateway, result)
 		return
@@ -216,7 +236,12 @@ func (s *Server) handleOCIE3FlexLifecycle(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
 		return
 	}
-	result := oci.SmokeE3FlexLifecycle(r.Context(), s.ociReadiness, req)
+	cfg, _, err := s.resolveOCIConfig("", "")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "OCI_PROFILE_RESOLVE_FAILED", err.Error())
+		return
+	}
+	result := oci.SmokeE3FlexLifecycle(r.Context(), cfg, req)
 	if !result.Verified {
 		writeJSON(w, http.StatusBadGateway, result)
 		return
@@ -230,7 +255,12 @@ func (s *Server) handleOCISmokeCleanup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
 		return
 	}
-	result := oci.CleanupSmokeInstances(r.Context(), s.ociReadiness, req)
+	cfg, _, err := s.resolveOCIConfig("", "")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "OCI_PROFILE_RESOLVE_FAILED", err.Error())
+		return
+	}
+	result := oci.CleanupSmokeInstances(r.Context(), cfg, req)
 	if !result.Verified {
 		writeJSON(w, http.StatusBadGateway, result)
 		return
@@ -244,7 +274,12 @@ func (s *Server) handleOCIReinstallInstance(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
 		return
 	}
-	result := oci.SmokeReinstallInstance(r.Context(), s.ociReadiness, req)
+	cfg, _, err := s.resolveOCIConfig("", "")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "OCI_PROFILE_RESOLVE_FAILED", err.Error())
+		return
+	}
+	result := oci.SmokeReinstallInstance(r.Context(), cfg, req)
 	if !result.Verified {
 		writeJSON(w, http.StatusBadGateway, result)
 		return
@@ -434,13 +469,39 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(req.CompartmentID) == "" {
 			req.CompartmentID = cfg.TenancyOCID
 		}
+		generatedRootPassword := ""
+		if req.GenerateRootPassword && strings.EqualFold(strings.TrimSpace(req.CompartmentID), strings.TrimSpace(cfg.TenancyOCID)) {
+			password, err := generateRootPassword()
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "ROOT_PASSWORD_GENERATION_FAILED", err.Error())
+				return
+			}
+			generatedRootPassword = password
+			req.CloudInit = mergeRootPasswordCloudInit(req.CloudInit, password)
+			req.NotifyRootPassword = true
+		}
 		job, err := s.store.CreateOCIInstanceLaunchTask(req, actorFromRequest(r))
 		if err != nil {
 			writeStoreError(w, err)
 			return
 		}
+		if generatedRootPassword != "" {
+			_ = s.createNotification(r.Context(), domain.NotificationRequest{
+				Title:          "Root password generated: " + req.Name,
+				Message:        rootPasswordNotificationMessage(req, job.ID, generatedRootPassword),
+				Severity:       domain.NotificationWarning,
+				Category:       "credential",
+				ResourceType:   "instance",
+				ResourceID:     job.ResourceID,
+				ProfileID:      job.ProfileID,
+				Region:         job.Region,
+				CompartmentID:  job.CompartmentID,
+				Sensitive:      true,
+				EmailRequested: req.NotifyRootPassword,
+			}, actorFromRequest(r))
+		}
 		s.enqueue(job.ID)
-		writeJSON(w, http.StatusAccepted, job)
+		writeJSON(w, http.StatusAccepted, sanitizeJob(job))
 		return
 	}
 
@@ -450,6 +511,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.enqueue(result.Job.ID)
+	result.Job = sanitizeJob(result.Job)
 	writeJSON(w, http.StatusCreated, result)
 }
 
@@ -476,7 +538,7 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.enqueue(job.ID)
-		writeJSON(w, http.StatusAccepted, job)
+		writeJSON(w, http.StatusAccepted, sanitizeJob(job))
 		return
 	}
 
@@ -486,7 +548,7 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.enqueue(job.ID)
-	writeJSON(w, http.StatusAccepted, job)
+	writeJSON(w, http.StatusAccepted, sanitizeJob(job))
 }
 
 func (s *Server) handleRebootInstance(w http.ResponseWriter, r *http.Request) {
@@ -553,8 +615,12 @@ func (s *Server) handleCreateIPTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
+	jobs := s.store.ListJobs()
+	for i := range jobs {
+		jobs[i] = sanitizeJob(jobs[i])
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items": s.store.ListJobs(),
+		"items": jobs,
 	})
 }
 
@@ -564,7 +630,7 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "JOB_NOT_FOUND", "job not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, job)
+	writeJSON(w, http.StatusOK, sanitizeJob(job))
 }
 
 func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
@@ -573,7 +639,7 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, job)
+	writeJSON(w, http.StatusOK, sanitizeJob(job))
 }
 
 func (s *Server) handleRetryJob(w http.ResponseWriter, r *http.Request) {
@@ -583,7 +649,187 @@ func (s *Server) handleRetryJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.enqueue(job.ID)
-	writeJSON(w, http.StatusAccepted, job)
+	writeJSON(w, http.StatusAccepted, sanitizeJob(job))
+}
+
+func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
+	unreadOnly := strings.EqualFold(r.URL.Query().Get("unread"), "true") || r.URL.Query().Get("unread") == "1"
+	items := s.store.ListNotifications(unreadOnly)
+	unread := 0
+	for _, item := range s.store.ListNotifications(true) {
+		if !item.Read {
+			unread++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":       items,
+		"unreadCount": unread,
+	})
+}
+
+func (s *Server) handleReadNotification(w http.ResponseWriter, r *http.Request) {
+	notification, err := s.store.MarkNotificationRead(r.PathValue("id"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, notification)
+}
+
+func (s *Server) handleReadAllNotifications(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": s.store.MarkAllNotificationsRead(),
+	})
+}
+
+func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	filter := domain.AuditLogFilter{
+		Actor:        query.Get("actor"),
+		Action:       query.Get("action"),
+		ResourceType: query.Get("resourceType"),
+		ResourceID:   query.Get("resourceId"),
+		ProfileID:    query.Get("profileId"),
+		Status:       query.Get("status"),
+		Limit:        parsePositiveInt(query.Get("limit")),
+	}
+	items, err := s.store.ListAuditLogs(filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "AUDIT_LOG_LIST_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleEmailSettings(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.store.GetEmailSettings())
+}
+
+func (s *Server) handleUpdateEmailSettings(w http.ResponseWriter, r *http.Request) {
+	var req domain.EmailSettings
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+		return
+	}
+	settings, err := s.store.SetEmailSettings(req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "EMAIL_SETTINGS_SAVE_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleEmailTest(w http.ResponseWriter, r *http.Request) {
+	var req domain.EmailTestRequest
+	if r.Body != nil {
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+			return
+		}
+	}
+	settings := s.store.GetEmailSettingsForSend()
+	if !settings.Enabled {
+		writeJSON(w, http.StatusBadGateway, domain.EmailTestResult{Verified: false, Message: "email delivery is disabled"})
+		return
+	}
+	if strings.TrimSpace(req.To) != "" {
+		settings.To = []string{strings.TrimSpace(req.To)}
+	}
+	if err := notify.SendEmail(r.Context(), settings, "OCI Lifecycle Platform test email", "This is a test email from OCI Lifecycle Platform."); err != nil {
+		writeJSON(w, http.StatusBadGateway, domain.EmailTestResult{Verified: false, Message: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, domain.EmailTestResult{Verified: true, Message: "test email sent"})
+}
+
+func (s *Server) handleWebhookSettings(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.store.GetWebhookSettings())
+}
+
+func (s *Server) handleUpdateWebhookSettings(w http.ResponseWriter, r *http.Request) {
+	var req domain.WebhookSettings
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+		return
+	}
+	settings, err := s.store.SetWebhookSettings(req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "WEBHOOK_SETTINGS_SAVE_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleWebhookTest(w http.ResponseWriter, r *http.Request) {
+	settings := s.store.GetWebhookSettingsForSend()
+	if !settings.Enabled {
+		writeJSON(w, http.StatusBadGateway, domain.WebhookTestResult{Verified: false, Message: "webhook delivery is disabled"})
+		return
+	}
+	payload := notify.WebhookPayload{
+		Event:     "webhook.test",
+		Title:     "OCI Lifecycle Platform webhook test",
+		Message:   "This is a test webhook from OCI Lifecycle Platform.",
+		Severity:  string(domain.NotificationInfo),
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := notify.SendWebhook(r.Context(), settings, payload); err != nil {
+		writeJSON(w, http.StatusBadGateway, domain.WebhookTestResult{Verified: false, Message: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, domain.WebhookTestResult{Verified: true, Message: "test webhook sent"})
+}
+
+func (s *Server) createNotification(ctx context.Context, req domain.NotificationRequest, actor string) domain.Notification {
+	notification, err := s.store.CreateNotification(req, actor)
+	if err != nil {
+		return domain.Notification{}
+	}
+	notification = s.deliverEmailNotification(ctx, notification)
+	notification = s.deliverWebhookNotification(ctx, notification)
+	return notification
+}
+
+func (s *Server) deliverEmailNotification(ctx context.Context, notification domain.Notification) domain.Notification {
+	if !notification.EmailRequested {
+		return notification
+	}
+	settings := s.store.GetEmailSettingsForSend()
+	if !settings.Enabled {
+		updated, _ := s.store.UpdateNotificationEmailStatus(notification.ID, false, "email delivery is disabled")
+		return updated
+	}
+	if err := notify.SendEmail(ctx, settings, notification.Title, notification.Message); err != nil {
+		updated, _ := s.store.UpdateNotificationEmailStatus(notification.ID, false, err.Error())
+		return updated
+	}
+	updated, _ := s.store.UpdateNotificationEmailStatus(notification.ID, true, "")
+	return updated
+}
+
+func (s *Server) deliverWebhookNotification(ctx context.Context, notification domain.Notification) domain.Notification {
+	settings := s.store.GetWebhookSettingsForSend()
+	if !settings.Enabled {
+		return notification
+	}
+	message := notification.Message
+	if notification.Sensitive {
+		message = "Sensitive notification created in panel. Open the console to view the protected content."
+	}
+	payload := notify.WebhookPayload{
+		Event:        "notification.created",
+		Notification: notification,
+		Title:        notification.Title,
+		Message:      message,
+		Severity:     string(notification.Severity),
+		CreatedAt:    notification.CreatedAt,
+	}
+	if err := notify.SendWebhook(ctx, settings, payload); err != nil {
+		updated, _ := s.store.UpdateNotificationWebhookStatus(notification.ID, false, err.Error())
+		return updated
+	}
+	updated, _ := s.store.UpdateNotificationWebhookStatus(notification.ID, true, "")
+	return updated
 }
 
 func (s *Server) handleAutomations(w http.ResponseWriter, r *http.Request) {
@@ -616,6 +862,63 @@ func decodeJSON(r *http.Request, out any) error {
 		return fmt.Errorf("请求 JSON 无效：%w", err)
 	}
 	return nil
+}
+
+func generateRootPassword() (string, error) {
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func mergeRootPasswordCloudInit(existing string, password string) string {
+	rootConfig := fmt.Sprintf(`#cloud-config
+disable_root: false
+ssh_pwauth: true
+chpasswd:
+  expire: false
+  list: |
+    root:%s
+runcmd:
+  - [ sh, -c, "sed -i 's/^#\\?PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config || true" ]
+  - [ sh, -c, "sed -i 's/^#\\?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config || true" ]
+  - [ sh, -c, "systemctl reload sshd || systemctl reload ssh || true" ]
+`, password)
+	existing = strings.TrimSpace(existing)
+	if existing == "" {
+		return rootConfig
+	}
+	return rootConfig + "\n\n# User supplied cloud-init follows.\n" + existing + "\n"
+}
+
+func rootPasswordNotificationMessage(req domain.CreateInstanceRequest, jobID string, password string) string {
+	return fmt.Sprintf(`A random root password was generated for an OCI instance launch task.
+
+Instance: %s
+Job: %s
+Region: %s
+Compartment: %s
+Username: root
+Password: %s
+
+This password was generated because Root tenancy was selected and root password generation was enabled. Store it securely and rotate it after first login. SSH password login still depends on the image and cloud-init execution result.`, req.Name, jobID, req.Region, req.CompartmentID, password)
+}
+
+func sanitizeJob(job domain.Job) domain.Job {
+	if job.Input == nil {
+		return job
+	}
+	input := map[string]any{}
+	for key, value := range job.Input {
+		input[key] = value
+	}
+	if value, ok := input["cloudInitSensitive"].(bool); ok && value {
+		delete(input, "cloudInit")
+		input["cloudInitRedacted"] = true
+	}
+	job.Input = input
+	return job
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
@@ -657,6 +960,14 @@ func actorFromRequest(r *http.Request) string {
 		return "admin"
 	}
 	return actor
+}
+
+func parsePositiveInt(value string) int {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed < 0 {
+		return 0
+	}
+	return parsed
 }
 
 func (s *Server) resolveOCIConfig(profileID string, region string) (oci.ReadinessConfig, domain.Profile, error) {

@@ -502,6 +502,169 @@ INSERT INTO audit_logs (
 	return err
 }
 
+func (s *PostgresSink) ListAuditLogs(filter domain.AuditLogFilter) ([]domain.AuditLog, error) {
+	if s == nil || s.conn == nil {
+		return nil, ErrNotConfigured()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	query := `SELECT id, actor, action, resource_type, resource_id, profile_id, region, compartment_id,
+       oci_request_id, oci_work_request_id, request_payload, result_payload,
+       error_code, error_message, created_at
+FROM audit_logs`
+	var where []string
+	var args []any
+	addLike := func(column string, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		args = append(args, "%"+value+"%")
+		where = append(where, fmt.Sprintf("%s ILIKE $%d", column, len(args)))
+	}
+	addLike("actor", filter.Actor)
+	addLike("action", filter.Action)
+	addLike("resource_type", filter.ResourceType)
+	addLike("resource_id", filter.ResourceID)
+	addLike("profile_id", filter.ProfileID)
+	switch strings.ToLower(strings.TrimSpace(filter.Status)) {
+	case "failed":
+		where = append(where, "(COALESCE(error_code, '') <> '' OR COALESCE(error_message, '') <> '')")
+	case "success":
+		where = append(where, "(COALESCE(error_code, '') = '' AND COALESCE(error_message, '') = '')")
+	}
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	limit := filter.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	args = append(args, limit)
+	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", len(args))
+
+	rows, err := s.conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.AuditLog
+	for rows.Next() {
+		var entry domain.AuditLog
+		var requestRaw, resultRaw []byte
+		var errorCode, errorMessage sql.NullString
+		if err := rows.Scan(
+			&entry.ID,
+			&entry.Actor,
+			&entry.Action,
+			&entry.ResourceType,
+			&entry.ResourceID,
+			&entry.ProfileID,
+			&entry.Region,
+			&entry.CompartmentID,
+			&entry.OCIRequestID,
+			&entry.OCIWorkRequestID,
+			&requestRaw,
+			&resultRaw,
+			&errorCode,
+			&errorMessage,
+			&entry.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		requestPayload, err := jsonMap(requestRaw)
+		if err != nil {
+			return nil, err
+		}
+		resultPayload, err := jsonMap(resultRaw)
+		if err != nil {
+			return nil, err
+		}
+		entry.RequestPayload = requestPayload
+		entry.ResultPayload = resultPayload
+		if errorCode.Valid {
+			entry.ErrorCode = errorCode.String
+		}
+		if errorMessage.Valid {
+			entry.ErrorMessage = errorMessage.String
+		}
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *PostgresSink) SaveEmailSettings(settings domain.EmailSettings) error {
+	return s.saveSetting("email", settings)
+}
+
+func (s *PostgresSink) GetEmailSettings() (domain.EmailSettings, error) {
+	var settings domain.EmailSettings
+	if err := s.getSetting("email", &settings); err != nil {
+		return domain.EmailSettings{}, err
+	}
+	if settings.Password != "" {
+		settings.PasswordSet = true
+	}
+	return settings, nil
+}
+
+func (s *PostgresSink) SaveWebhookSettings(settings domain.WebhookSettings) error {
+	return s.saveSetting("webhook", settings)
+}
+
+func (s *PostgresSink) GetWebhookSettings() (domain.WebhookSettings, error) {
+	var settings domain.WebhookSettings
+	if err := s.getSetting("webhook", &settings); err != nil {
+		return domain.WebhookSettings{}, err
+	}
+	if settings.Secret != "" {
+		settings.SecretSet = true
+	}
+	return settings, nil
+}
+
+func (s *PostgresSink) saveSetting(key string, value any) error {
+	if s == nil || s.conn == nil {
+		return ErrNotConfigured()
+	}
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = s.conn.ExecContext(ctx, `
+INSERT INTO app_settings (key, value, updated_at)
+VALUES ($1, $2, now())
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, key, payload)
+	return err
+}
+
+func (s *PostgresSink) getSetting(key string, out any) error {
+	if s == nil || s.conn == nil {
+		return ErrNotConfigured()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var payload []byte
+	err := s.conn.QueryRowContext(ctx, `SELECT value FROM app_settings WHERE key = $1`, key).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if len(payload) == 0 {
+		return nil
+	}
+	return json.Unmarshal(payload, out)
+}
+
 func jsonPayload(payload map[string]any, nullable bool) (any, error) {
 	if len(payload) == 0 {
 		if nullable {

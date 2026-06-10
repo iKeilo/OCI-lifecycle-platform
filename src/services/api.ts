@@ -54,7 +54,7 @@ export type Instance = {
   ocpus: number;
   memoryGb: number;
   bootVolumeGb: number;
-  status: "Running" | "Stopped" | "Provisioning" | "Terminated";
+  status: "Running" | "Stopped" | "Provisioning" | "Terminating" | "Terminated";
   protected: boolean;
   ociInstanceId: string;
   profileId: string;
@@ -167,6 +167,34 @@ export type AutomationRule = {
   createdAt: string;
 };
 
+export type AuditLog = {
+  id: number;
+  actor: string;
+  action: string;
+  resourceType: string;
+  resourceId: string;
+  profileId: string;
+  region: string;
+  compartmentId: string;
+  ociRequestId: string;
+  ociWorkRequestId: string;
+  requestPayload?: Record<string, unknown>;
+  resultPayload?: Record<string, unknown>;
+  errorCode?: string;
+  errorMessage?: string;
+  createdAt: string;
+};
+
+export type AuditLogFilter = {
+  actor?: string;
+  action?: string;
+  resourceType?: string;
+  resourceId?: string;
+  profileId?: string;
+  status?: "success" | "failed" | "";
+  limit?: number;
+};
+
 type ListResponse<T> = {
   items: T[];
 };
@@ -178,6 +206,16 @@ export type IPTaskPayload = {
   vnicId: string;
   note: string;
   enableIpv6: boolean;
+  autoConfigureIpv6: boolean;
+  ipv6Strategy: "assign_only" | "additive" | "clone_route_table" | "replace_public_path";
+  networkChangeMode: "assign_only" | "additive" | "clone_route_table" | "replace_public_path";
+  routeTableMode: "merge_existing" | "clone";
+  securityMode: "append" | "none";
+  allowIrreversibleVcnIpv6: boolean;
+  allowPublicIpv4Change: boolean;
+  openSshIpv6: boolean;
+  openHttpIpv6: boolean;
+  openHttpsIpv6: boolean;
   snapshotBefore: boolean;
 };
 
@@ -220,8 +258,73 @@ export type CreateInstancePayload = {
   cloudInit: string;
   tags: Record<string, string>;
   maxRetries: number;
+  retryMode: "success_stop" | "count" | "none";
+  retryMaxAttempts: number;
+  retryDelayMinSeconds: number;
+  retryDelayMaxSeconds: number;
   requireApproval: boolean;
   snapshotBefore: boolean;
+  generateRootPassword: boolean;
+  notifyRootPassword: boolean;
+};
+
+export type Notification = {
+  id: string;
+  title: string;
+  message: string;
+  severity: "info" | "success" | "warning" | "error";
+  category: string;
+  resourceType?: string;
+  resourceId?: string;
+  profileId?: string;
+  region?: string;
+  compartmentId?: string;
+  sensitive: boolean;
+  read: boolean;
+  emailRequested: boolean;
+  emailSent: boolean;
+  emailError?: string;
+  webhookSent: boolean;
+  webhookError?: string;
+  createdBy: string;
+  createdAt: string;
+  readAt?: string;
+};
+
+export type NotificationListResponse = {
+  items: Notification[];
+  unreadCount: number;
+};
+
+export type EmailSettings = {
+  enabled: boolean;
+  host: string;
+  port: number;
+  username: string;
+  password?: string;
+  passwordSet: boolean;
+  from: string;
+  to: string[];
+  useTls: boolean;
+  startTls: boolean;
+};
+
+export type EmailTestResult = {
+  verified: boolean;
+  message: string;
+};
+
+export type WebhookSettings = {
+  enabled: boolean;
+  url: string;
+  secret?: string;
+  secretSet: boolean;
+  headers?: Record<string, string>;
+};
+
+export type WebhookTestResult = {
+  verified: boolean;
+  message: string;
 };
 
 export type CreateInstanceResponse = {
@@ -250,6 +353,8 @@ export type InstanceActionPayload = {
   targetShape: string;
   targetOcpus: number;
   targetMemoryGb: number;
+  targetBootVolumeGb: number;
+  expandBootVolume: boolean;
   snapshotBefore: boolean;
   note: string;
 };
@@ -377,6 +482,71 @@ export async function cancelJob(jobId: string): Promise<Job> {
 
 export async function retryJob(jobId: string): Promise<Job> {
   return request<Job>(`/api/jobs/${encodeURIComponent(jobId)}/retry`, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
+export async function listNotifications(unreadOnly = false): Promise<NotificationListResponse> {
+  return request<NotificationListResponse>(`/api/notifications${unreadOnly ? "?unread=true" : ""}`);
+}
+
+export async function markNotificationRead(id: string): Promise<Notification> {
+  return request<Notification>(`/api/notifications/${encodeURIComponent(id)}/read`, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
+export async function markAllNotificationsRead(): Promise<ListResponse<Notification>> {
+  return request<ListResponse<Notification>>("/api/notifications/read-all", {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
+export async function listAuditLogs(filter: AuditLogFilter = {}): Promise<AuditLog[]> {
+  const query = new URLSearchParams();
+  Object.entries(filter).forEach(([key, value]) => {
+    if (value !== undefined && value !== "") {
+      query.set(key, String(value));
+    }
+  });
+  const response = await request<ListResponse<AuditLog>>(`/api/audit-logs${query.toString() ? `?${query.toString()}` : ""}`);
+  return response.items;
+}
+
+export async function getEmailSettings(): Promise<EmailSettings> {
+  return request<EmailSettings>("/api/email/settings");
+}
+
+export async function updateEmailSettings(payload: EmailSettings): Promise<EmailSettings> {
+  return request<EmailSettings>("/api/email/settings", {
+    method: "PUT",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function testEmail(to: string): Promise<EmailTestResult> {
+  return request<EmailTestResult>("/api/email/test", {
+    method: "POST",
+    body: JSON.stringify({ to })
+  });
+}
+
+export async function getWebhookSettings(): Promise<WebhookSettings> {
+  return request<WebhookSettings>("/api/webhook/settings");
+}
+
+export async function updateWebhookSettings(payload: WebhookSettings): Promise<WebhookSettings> {
+  return request<WebhookSettings>("/api/webhook/settings", {
+    method: "PUT",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function testWebhook(): Promise<WebhookTestResult> {
+  return request<WebhookTestResult>("/api/webhook/test", {
     method: "POST",
     body: JSON.stringify({})
   });

@@ -40,9 +40,14 @@ export function CreateInstancePage() {
   const [cloudInit, setCloudInit] = useState("");
   const [ownerTag, setOwnerTag] = useState("");
   const [purposeTag, setPurposeTag] = useState("");
-  const [maxRetries, setMaxRetries] = useState(0);
+  const [retryMode, setRetryMode] = useState<"success_stop" | "count" | "none">("none");
+  const [retryMaxAttempts, setRetryMaxAttempts] = useState(3);
+  const [retryDelayMinSeconds, setRetryDelayMinSeconds] = useState(3);
+  const [retryDelayMaxSeconds, setRetryDelayMaxSeconds] = useState(12);
   const [requireApproval, setRequireApproval] = useState(false);
   const [snapshotBefore, setSnapshotBefore] = useState(true);
+  const [generateRootPassword, setGenerateRootPassword] = useState(true);
+  const [notifyRootPassword, setNotifyRootPassword] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [resultMessage, setResultMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
@@ -50,6 +55,10 @@ export function CreateInstancePage() {
   const selectedProfile = useMemo(() => options?.profiles.find((profile) => profile.id === profileId), [options, profileId]);
   const selectedShape = useMemo(() => options?.shapes.find((item) => item.name === shape), [options, shape]);
   const selectedCompartment = useMemo(() => optionLabel(options?.compartments, compartmentId), [options, compartmentId]);
+  const isRootTenancy = useMemo(() => {
+    const label = selectedCompartment.toLowerCase();
+    return label.includes("root tenancy") || label.includes("root");
+  }, [selectedCompartment]);
 
   useEffect(() => {
     async function load() {
@@ -149,11 +158,31 @@ export function CreateInstancePage() {
     if (shapeOption.minMemoryGb > 0 && memoryGb < shapeOption.minMemoryGb) setMemoryGb(shapeOption.minMemoryGb);
   }
 
+  function retryMaxRetries() {
+    if (retryMode === "none") return 0;
+    if (retryMode === "count") return Math.max(0, retryMaxAttempts);
+    return 9999;
+  }
+
+  function normalizeRetryDelay(value: number) {
+    return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+  }
+
+  function retryDelayBounds() {
+    const min = normalizeRetryDelay(retryDelayMinSeconds);
+    const max = normalizeRetryDelay(retryDelayMaxSeconds);
+    return {
+      min: Math.min(min, max),
+      max: Math.max(min, max)
+    };
+  }
+
   async function handleSubmit() {
     setIsSubmitting(true);
     setResultMessage("");
     setErrorMessage("");
     try {
+      const retryDelay = retryDelayBounds();
       const result = await createInstanceTask({
         name,
         profileId,
@@ -179,9 +208,15 @@ export function CreateInstancePage() {
           purpose: purposeTag,
           managedBy: "oci-lifecycle-platform"
         }),
-        maxRetries,
+        maxRetries: retryMaxRetries(),
+        retryMode,
+        retryMaxAttempts: retryMode === "count" ? Math.max(0, retryMaxAttempts) : retryMaxRetries(),
+        retryDelayMinSeconds: retryMode === "none" ? 0 : retryDelay.min,
+        retryDelayMaxSeconds: retryMode === "none" ? 0 : retryDelay.max,
         requireApproval,
-        snapshotBefore
+        snapshotBefore,
+        generateRootPassword: isRootTenancy && generateRootPassword,
+        notifyRootPassword
       });
       const job = "job" in result ? result.job : (result as Job);
       setResultMessage(`已提交创建任务 ${job.id}。请到任务中心查看 OCI Request ID、Work Request 和执行结果。`);
@@ -481,6 +516,28 @@ export function CreateInstancePage() {
                   </div>
                   <button className={`toggle-switch ${snapshotBefore ? "on" : ""}`} onClick={() => setSnapshotBefore((value) => !value)} />
                 </div>
+                <div className={`switch-row ${isRootTenancy ? "warning-row" : ""}`}>
+                  <div>
+                    <strong>Root tenancy 随机 root 密码</strong>
+                    <p>
+                      {isRootTenancy
+                        ? "当前选择 Root tenancy，提交后后端会生成随机 root 密码并通过 cloud-init 设置。"
+                        : "仅在选择 Root tenancy 时生效；普通 compartment 不会自动生成 root 密码。"}
+                    </p>
+                  </div>
+                  <button
+                    className={`toggle-switch ${isRootTenancy && generateRootPassword ? "on" : ""}`}
+                    disabled={!isRootTenancy}
+                    onClick={() => setGenerateRootPassword((value) => !value)}
+                  />
+                </div>
+                <div className="switch-row">
+                  <div>
+                    <strong>推送 root 密码通知</strong>
+                    <p>生成密码后写入站内敏感通知；邮件服务启用时会同步推送邮件。</p>
+                  </div>
+                  <button className={`toggle-switch ${notifyRootPassword ? "on" : ""}`} onClick={() => setNotifyRootPassword((value) => !value)} />
+                </div>
               </div>
 
               <div className="form-section">
@@ -497,10 +554,61 @@ export function CreateInstancePage() {
                     purpose 标签
                     <input value={purposeTag} onChange={(event) => setPurposeTag(event.target.value)} />
                   </label>
-                  <label>
-                    失败重试次数
-                    <input type="number" min={0} max={10} value={maxRetries} onChange={(event) => setMaxRetries(Number(event.target.value))} />
-                  </label>
+                </div>
+                <div className="retry-policy-layout">
+                  <div className="choice-grid retry-choice-grid">
+                    {[
+                      { value: "success_stop", title: "成功则停止模式", description: "按延迟范围持续重试，任务成功后立即停止。" },
+                      { value: "count", title: "次数重试模式", description: "失败后最多重试指定次数，适合容量重试。" },
+                      { value: "none", title: "无重试模式", description: "失败即停止，不创建自动重试计划。" }
+                    ].map((item) => (
+                      <button
+                        className={`choice-card ${retryMode === item.value ? "active" : ""}`}
+                        key={item.value}
+                        onClick={() => setRetryMode(item.value as "success_stop" | "count" | "none")}
+                        type="button"
+                      >
+                        <strong>{item.title}</strong>
+                        <span>{item.description}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {retryMode !== "none" ? (
+                    <div className="retry-policy-panel">
+                      {retryMode === "count" ? (
+                        <label>
+                          重试次数
+                          <input
+                            type="number"
+                            min={1}
+                            max={999}
+                            value={retryMaxAttempts}
+                            onChange={(event) => setRetryMaxAttempts(Number(event.target.value))}
+                          />
+                        </label>
+                      ) : null}
+                      <div>
+                        <span className="field-label">延迟范围（秒）</span>
+                        <div className="inline-number-range">
+                          <input
+                            aria-label="最小延迟秒数"
+                            type="number"
+                            min={0}
+                            value={retryDelayMinSeconds}
+                            onChange={(event) => setRetryDelayMinSeconds(Number(event.target.value))}
+                          />
+                          <span>到</span>
+                          <input
+                            aria-label="最大延迟秒数"
+                            type="number"
+                            min={0}
+                            value={retryDelayMaxSeconds}
+                            onChange={(event) => setRetryDelayMaxSeconds(Number(event.target.value))}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </div>
 

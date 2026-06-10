@@ -15,6 +15,7 @@ func TestMapInstanceStatus(t *testing.T) {
 	}{
 		{state: core.InstanceLifecycleStateRunning, want: domain.InstanceRunning},
 		{state: core.InstanceLifecycleStateStopped, want: domain.InstanceStopped},
+		{state: core.InstanceLifecycleStateTerminating, want: domain.InstanceTerminating},
 		{state: core.InstanceLifecycleStateTerminated, want: domain.InstanceTerminated},
 		{state: core.InstanceLifecycleStateStarting, want: domain.InstanceProvisioning},
 	}

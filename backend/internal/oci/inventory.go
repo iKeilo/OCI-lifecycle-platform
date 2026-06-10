@@ -181,9 +181,11 @@ func mapInstanceStatus(state core.InstanceLifecycleStateEnum) domain.InstanceSta
 		return domain.InstanceRunning
 	case core.InstanceLifecycleStateStopped:
 		return domain.InstanceStopped
+	case core.InstanceLifecycleStateTerminating:
+		return domain.InstanceTerminating
 	case core.InstanceLifecycleStateTerminated:
 		return domain.InstanceTerminated
-	case core.InstanceLifecycleStateProvisioning, core.InstanceLifecycleStateStarting, core.InstanceLifecycleStateStopping, core.InstanceLifecycleStateTerminating, core.InstanceLifecycleStateMoving:
+	case core.InstanceLifecycleStateProvisioning, core.InstanceLifecycleStateStarting, core.InstanceLifecycleStateStopping, core.InstanceLifecycleStateMoving:
 		return domain.InstanceProvisioning
 	default:
 		return domain.InstanceProvisioning

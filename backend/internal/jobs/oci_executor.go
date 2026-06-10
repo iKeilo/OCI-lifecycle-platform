@@ -132,10 +132,20 @@ func (e *OCIExecutor) executeIPManagementJob(ctx context.Context, cfg oci.Readin
 		instanceID = job.ResourceID
 	}
 	result := oci.ExecuteIPManagement(ctx, cfg, oci.IPManagementExecutionRequest{
-		InstanceID: instanceID,
-		VNICID:     stringFromInput(job.Input["vnicId"]),
-		EnableIPv6: boolFromInput(job.Input["enableIpv6"]),
-		JobID:      job.ID,
+		InstanceID:               instanceID,
+		VNICID:                   stringFromInput(job.Input["vnicId"]),
+		EnableIPv6:               boolFromInput(job.Input["enableIpv6"]),
+		AutoConfigureIPv6:        boolFromInput(job.Input["autoConfigureIpv6"]),
+		IPv6Strategy:             stringFromInput(job.Input["ipv6Strategy"]),
+		NetworkChangeMode:        stringFromInput(job.Input["networkChangeMode"]),
+		RouteTableMode:           stringFromInput(job.Input["routeTableMode"]),
+		SecurityMode:             stringFromInput(job.Input["securityMode"]),
+		AllowIrreversibleVCNIPv6: boolFromInput(job.Input["allowIrreversibleVcnIpv6"]),
+		AllowPublicIPv4Change:    boolFromInput(job.Input["allowPublicIpv4Change"]),
+		OpenSSHIPv6:              boolFromInput(job.Input["openSshIpv6"]),
+		OpenHTTPIPv6:             boolFromInput(job.Input["openHttpIpv6"]),
+		OpenHTTPSIPv6:            boolFromInput(job.Input["openHttpsIpv6"]),
+		JobID:                    job.ID,
 	})
 	if _, err := e.store.SetJobOCIRefs(job.ID, result.RequestID, result.WorkRequestID); err != nil {
 		return err
@@ -182,6 +192,8 @@ func (e *OCIExecutor) executeInstanceJob(ctx context.Context, cfg oci.ReadinessC
 		TargetShape:        stringFromInput(job.Input["targetShape"]),
 		TargetOCPUs:        intFromInput(job.Input["targetOcpus"]),
 		TargetMemoryGB:     intFromInput(job.Input["targetMemoryGb"]),
+		TargetBootVolumeGB: intFromInput(job.Input["targetBootVolumeGb"]),
+		ExpandBootVolume:   boolFromInput(job.Input["expandBootVolume"]),
 		JobID:              job.ID,
 	})
 	if _, err := e.store.SetJobOCIRefs(job.ID, result.RequestID, result.WorkRequestID); err != nil {

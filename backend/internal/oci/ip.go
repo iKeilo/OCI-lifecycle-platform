@@ -11,38 +11,74 @@ import (
 )
 
 type IPManagementExecutionRequest struct {
-	InstanceID string
-	VNICID     string
-	EnableIPv6 bool
-	JobID      string
+	InstanceID               string
+	VNICID                   string
+	EnableIPv6               bool
+	AutoConfigureIPv6        bool
+	IPv6Strategy             string
+	NetworkChangeMode        string
+	RouteTableMode           string
+	SecurityMode             string
+	AllowIrreversibleVCNIPv6 bool
+	AllowPublicIPv4Change    bool
+	OpenSSHIPv6              bool
+	OpenHTTPIPv6             bool
+	OpenHTTPSIPv6            bool
+	JobID                    string
 }
 
 type IPManagementExecutionResult struct {
-	Verified         bool      `json:"verified"`
-	ExecutionMode    string    `json:"executionMode"`
-	InstanceID       string    `json:"instanceId"`
-	VNICID           string    `json:"vnicId,omitempty"`
-	SubnetID         string    `json:"subnetId,omitempty"`
-	SubnetIPv6CIDR   string    `json:"subnetIpv6Cidr,omitempty"`
-	ExistingIPv6     []string  `json:"existingIpv6,omitempty"`
-	IPv6ID           string    `json:"ipv6Id,omitempty"`
-	IPv6Address      string    `json:"ipv6Address,omitempty"`
-	IPv6State        string    `json:"ipv6State,omitempty"`
-	RequestID        string    `json:"requestId,omitempty"`
-	WorkRequestID    string    `json:"workRequestId,omitempty"`
-	Noop             bool      `json:"noop"`
-	ErrorCode        string    `json:"errorCode,omitempty"`
-	ErrorMessage     string    `json:"errorMessage,omitempty"`
-	ExecutedAt       time.Time `json:"executedAt"`
-	WaitedForAddress bool      `json:"waitedForAddress"`
+	Verified               bool              `json:"verified"`
+	ExecutionMode          string            `json:"executionMode"`
+	InstanceID             string            `json:"instanceId"`
+	VNICID                 string            `json:"vnicId,omitempty"`
+	VCNID                  string            `json:"vcnId,omitempty"`
+	SubnetID               string            `json:"subnetId,omitempty"`
+	VCNIPv6CIDR            string            `json:"vcnIpv6Cidr,omitempty"`
+	SubnetIPv6CIDR         string            `json:"subnetIpv6Cidr,omitempty"`
+	ExistingIPv6           []string          `json:"existingIpv6,omitempty"`
+	AutoConfigureIPv6      bool              `json:"autoConfigureIpv6"`
+	IPv6Strategy           string            `json:"ipv6Strategy,omitempty"`
+	NetworkChangeMode      string            `json:"networkChangeMode,omitempty"`
+	RouteTableMode         string            `json:"routeTableMode,omitempty"`
+	SecurityMode           string            `json:"securityMode,omitempty"`
+	InternetGatewayID      string            `json:"internetGatewayId,omitempty"`
+	CreatedInternetGateway bool              `json:"createdInternetGateway"`
+	RouteTableID           string            `json:"routeTableId,omitempty"`
+	CreatedRouteTableID    string            `json:"createdRouteTableId,omitempty"`
+	RouteTableChanged      bool              `json:"routeTableChanged"`
+	SecurityListIDs        []string          `json:"securityListIds,omitempty"`
+	NSGIDs                 []string          `json:"nsgIds,omitempty"`
+	SecurityListsChanged   bool              `json:"securityListsChanged"`
+	NSGsChanged            bool              `json:"nsgsChanged"`
+	PublicIPv4Changed      bool              `json:"publicIpv4Changed"`
+	Warnings               []string          `json:"warnings,omitempty"`
+	IrreversibleChanges    []string          `json:"irreversibleChanges,omitempty"`
+	NetworkSteps           []IPv6NetworkStep `json:"networkSteps,omitempty"`
+	IPv6ID                 string            `json:"ipv6Id,omitempty"`
+	IPv6Address            string            `json:"ipv6Address,omitempty"`
+	IPv6State              string            `json:"ipv6State,omitempty"`
+	RequestID              string            `json:"requestId,omitempty"`
+	WorkRequestID          string            `json:"workRequestId,omitempty"`
+	WorkRequestIDs         []string          `json:"workRequestIds,omitempty"`
+	Noop                   bool              `json:"noop"`
+	ErrorCode              string            `json:"errorCode,omitempty"`
+	ErrorMessage           string            `json:"errorMessage,omitempty"`
+	ExecutedAt             time.Time         `json:"executedAt"`
+	WaitedForAddress       bool              `json:"waitedForAddress"`
 }
 
 func ExecuteIPManagement(ctx context.Context, cfg ReadinessConfig, req IPManagementExecutionRequest) IPManagementExecutionResult {
 	result := IPManagementExecutionResult{
-		ExecutionMode: cfg.ExecutionMode,
-		InstanceID:    req.InstanceID,
-		VNICID:        req.VNICID,
-		ExecutedAt:    time.Now().UTC(),
+		ExecutionMode:     cfg.ExecutionMode,
+		InstanceID:        req.InstanceID,
+		VNICID:            req.VNICID,
+		AutoConfigureIPv6: req.AutoConfigureIPv6,
+		IPv6Strategy:      defaultString(req.IPv6Strategy, "assign_only"),
+		NetworkChangeMode: normalizedIPv6NetworkMode(req),
+		RouteTableMode:    defaultString(req.RouteTableMode, routeTableModeFromNetworkMode(normalizedIPv6NetworkMode(req))),
+		SecurityMode:      defaultString(req.SecurityMode, "append"),
+		ExecutedAt:        time.Now().UTC(),
 	}
 	readiness := CheckReadiness(cfg)
 	if !readiness.Ready {
@@ -112,10 +148,26 @@ func ExecuteIPManagement(ctx context.Context, cfg ReadinessConfig, req IPManagem
 		result.ErrorMessage = err.Error()
 		return result
 	}
+	result.VCNID = stringValue(subnet.Subnet.VcnId)
 	result.SubnetIPv6CIDR = firstSubnetIPv6CIDR(subnet.Subnet)
 	if result.SubnetIPv6CIDR == "" {
+		if !req.AutoConfigureIPv6 && normalizedIPv6NetworkMode(req) == ipv6ModeAssignOnly {
+			result.ErrorCode = "OCI_IPV6_SUBNET_NOT_ENABLED"
+			result.ErrorMessage = fmt.Sprintf("subnet %s has no IPv6 CIDR block; enable IPv6 on the VCN/subnet or choose automatic IPv6 network orchestration", result.SubnetID)
+			return result
+		}
+	}
+	if req.AutoConfigureIPv6 || normalizedIPv6NetworkMode(req) != ipv6ModeAssignOnly {
+		updatedSubnet, ok := ensureIPv6Network(ctx, clients, cfg, req, &result, instance.Instance, vnic, subnet.Subnet)
+		if !ok {
+			return result
+		}
+		subnet.Subnet = updatedSubnet
+		result.SubnetIPv6CIDR = firstSubnetIPv6CIDR(subnet.Subnet)
+	}
+	if result.SubnetIPv6CIDR == "" {
 		result.ErrorCode = "OCI_IPV6_SUBNET_NOT_ENABLED"
-		result.ErrorMessage = fmt.Sprintf("subnet %s has no IPv6 CIDR block; enable IPv6 on the VCN/subnet before assigning IPv6 to this VNIC", result.SubnetID)
+		result.ErrorMessage = fmt.Sprintf("subnet %s has no IPv6 CIDR block after orchestration", result.SubnetID)
 		return result
 	}
 

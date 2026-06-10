@@ -1,5 +1,124 @@
 # Real OCI Validation Log
 
+## 2026-06-10 IPv6 网络编排专项补充验证
+
+测试环境：`http://10.0.0.142:24320` Docker 部署，`OCI_EXECUTION_MODE=oci`，通过 Web 保存的 `profile-default-2` 执行真实 OCI SDK 调用。
+
+测试工具：`backend/cmd/oci-ipv6-orch-smoke`。本次为工具新增了强制模式和专项开关：
+
+```bash
+go run ./cmd/oci-ipv6-orch-smoke \
+  -profile profile-default-2 \
+  -mode clone_route_table|additive|replace_public_path \
+  -nsg=true \
+  -reserved-public-ip=true \
+  -cleanup=true
+```
+
+已完成真实 OCI 专项：
+
+- `clone_route_table`：创建 IPv4-only VCN/Subnet/实例后，自动添加 VCN IPv6 `/56`、Subnet IPv6 `/64`，克隆 Route Table，追加 `::/0 -> IGW`，并将目标 Subnet 切换到克隆路由表。结果 `verified=true`，`routeTableChanged=true`，`createdRouteTableId` 非空，公网 IPv4 保持不变，清理全部成功。
+- NSG 场景：测试命令真实创建 NSG、绑定到 primary VNIC，再执行 IPv6 编排。结果 `nsgBound=true`、`nsgsChanged=true`，`ENSURE_NSG_IPV6` 成功追加 IPv6 egress、ICMPv6 Packet Too Big 和 SSH 入站规则；测试 NSG 已删除。
+- 预留公网 IPv4：测试命令真实创建 reserved public IP，并通过 `LaunchInstanceFromRequest` 在实例启动后绑定到 primary private IP。结果 `reservedPublicIpUsed=true`，初始/最终公网 IPv4 与 reserved public IP 一致；测试 reserved public IP 已删除。
+- `replace_public_path`：强制危险公网路径模式并显式允许公网 IPv4 变化。当前 OCI 测试路径下仍复用已有 Internet Gateway 并合并路由，结果 `verified=true`、`publicIpv4Changed=false`，公网 IPv4 未变化。
+
+清理与残留检查：
+
+- 以上每个专项均创建独立 `codex-ipv6-orch-smoke-*` 测试实例和临时网络资源。
+- 每次测试结束后均执行 `TERMINATE`，`preserveBootVolume=false`。
+- 临时 Subnet、Route Table、Security List、Internet Gateway、VCN、NSG、reserved public IP 均已清理。
+- 后置只读检查结果：`nonTerminatedCodexIPv6Smoke=0`。
+
+本次结论：
+
+- 在当前 OCI 区域和公网子网路径下，IPv4-only VCN/Subnet 可以在保持当前公网 IPv4 的情况下原地增加公网 IPv6。
+- `clone_route_table`、NSG 规则追加、reserved public IP 创建前绑定、`replace_public_path` 强制模式均已通过真实 OCI 验证。
+- `replace_public_path` 目前并不会主动销毁/替换已有 IGW；它表示允许公网路径变更的高风险确认模式。在本次验证环境中没有触发 IPv4 变更。
+
+## 2026-06-10 IPv4-only 网络原地添加 IPv6 真实验证
+
+测试环境：`http://10.0.0.142:24320` Docker 部署，`OCI_EXECUTION_MODE=oci`，通过 Web 保存的 `profile-default-2` 执行真实 OCI SDK 调用。
+
+测试工具：`backend/cmd/oci-ipv6-orch-smoke`。
+
+测试资源：
+- 测试实例：`codex-ipv6-orch-smoke-20260609-173955`
+- Shape：`VM.Standard.E3.Flex`
+- 配置：`1 OCPU / 1 GB RAM / 50 GB boot volume`
+- 测试网络：由 smoke 命令临时创建 IPv4-only VCN、公网 Subnet、Internet Gateway、Route Table、Security List。
+
+验证结果：
+- `additive` 原地双栈增配成功。
+- VCN 从 IPv4-only 成功添加 Oracle GUA IPv6 `/56`。
+- Subnet 成功添加 IPv6 `/64`。
+- 复用已有测试 Internet Gateway，未创建额外 IGW。
+- Route Table 成功合并 `::/0 -> Internet Gateway`。
+- Security List 成功追加 IPv6 egress、ICMPv6 和 SSH IPv6 入站规则。
+- Primary VNIC 成功分配公网 IPv6：`2603:c024:f:ef00:0:3a09:33eb:a264`。
+- 初始公网 IPv4：`168.110.122.181`。
+- 最终公网 IPv4：`168.110.122.181`。
+- 结论：本次真实 OCI 测试证明在当前区域/公网子网/IGW 路径下，可以在保持原公网 IPv4 不变的情况下，为 IPv4-only VCN/Subnet/实例原地添加公网 IPv6。
+- `clone_route_table` / `replace_public_path` 未触发，因为 additive 模式已经成功。
+
+清理结果：
+- 测试实例已执行 `TERMINATE`，`preserveBootVolume=false`。
+- 测试 Subnet、Route Table、Security List、Internet Gateway、VCN 均已删除，smoke 清理步骤全部 `verified=true`。
+- 后置 `GET /api/instances?profileId=profile-default-2` 实时查询返回该测试实例状态为 `Terminated`，没有运行中的测试实例残留。
+
+## 2026-06-10 IPv6 网络编排实施记录
+
+状态：已实现；`additive` 原地双栈增配、`clone_route_table`、NSG 专项、保留公网 IP 创建前绑定和 `replace_public_path` 强制模式均已完成真实 OCI 端到端验证。
+
+本次落地：
+
+- IPv4-only VCN 自动添加 Oracle GUA IPv6 CIDR：调用 `AddIpv6VcnCidr`，并等待 VCN 重新读取得到 IPv6 CIDR。
+- IPv4-only Subnet 自动添加 IPv6 `/64`：从 VCN IPv6 前缀内选择未被现有 Subnet 占用的 `/64`，调用 `AddIpv6SubnetCidr`。
+- Internet Gateway 编排：优先复用已启用 IGW；如无可用 IGW，则创建带 `managedBy=codex` 标签的新 IGW。
+- Route Table 编排：
+  - `additive` / `merge_existing`：读取现有规则后合并追加 `::/0 -> Internet Gateway`。
+  - `clone_route_table`：克隆现有路由规则，追加 `::/0`，再将目标 Subnet 切换到新 Route Table。
+- Security 编排：追加 IPv6 egress、ICMPv6 Packet Too Big、可选 SSH/HTTP/HTTPS 入站规则；支持 Security List 和 VNIC 绑定的 NSG。
+- VNIC IPv6 分配：网络编排完成后继续调用 `CreateIpv6`，并等待 IPv6 进入 `AVAILABLE`。
+- Web UI：IP 管理弹窗新增“只添加 IPv6 / 原地双栈增配 / 克隆路由表 / 危险公网路径替换”。
+- 安全确认：VCN IPv6 CIDR 按不可逆风险处理；危险公网路径模式必须显式允许 IPv4 公网 IP 变化。
+
+本地验证：
+
+```powershell
+cd backend
+go test ./...
+
+cd ..
+npm run build
+```
+
+真实 OCI 验证状态：
+
+- 已验证：在专用 `codex-` 测试 VCN/Subnet 上执行 `additive` 模式，VCN `/56`、Subnet `/64`、IGW 复用、`::/0` 路由、安全规则和 VNIC IPv6 全部成功。
+- 已验证：原临时 IPv4 公网 IP 在 `additive` 模式下保持不变。
+- 已验证：测试实例、测试 Subnet、测试 Route Table、测试 Security List、测试 IGW、测试 VCN 已清理。
+- 已验证：执行 `clone_route_table` 模式，目标 Subnet 成功切换到克隆路由表。
+- 已验证：NSG 场景真实追加 IPv6 规则成功。
+
+## 2026-06-09 追加验证记录
+
+测试环境：`http://10.0.0.142:24320` Docker 部署，`OCI_EXECUTION_MODE=oci`，通过 Web 保存的 OCI Profile 执行真实 SDK 调用。
+
+已验证：
+
+- E3 Flex 测试实例创建：`VM.Standard.E3.Flex`，`1 OCPU / 1 GB / 50 GB boot volume`，测试实例名称使用 `codex-` 前缀。
+- 启动盘扩容：通过 `POST /api/instances/{ocid}/actions` 提交 `RESIZE` 任务，`targetBootVolumeGb=60`，真实调用 `UpdateInstance`、`ListBootVolumeAttachments`、`GetBootVolume`、`UpdateBootVolume`，任务成功，结果包含 `bootVolumeExpanded=true`、`currentBootVolumeGb=50`、`targetBootVolumeGb=60`。
+- 降盘边界：再次提交 `targetBootVolumeGb=50`，任务按预期失败，错误为 `OCI_BOOT_VOLUME_CANNOT_SHRINK`，确认“一旦扩容无法降盘”的限制已由后端执行器拦截。
+- IPv4-only 后补 IPv6 历史错误路径：创建 `codex-ipv6-postadd-*` 测试实例后提交 `enableIpv6=true`、`autoConfigureIpv6=true`、`ipv6Strategy=replace_gateway` 的 IP 管理任务。当时自动 VCN/Subnet IPv6 CIDR 与网关编排尚未实现，因此按真实 OCI 状态失败，错误为 `OCI_IPV6_SUBNET_NOT_ENABLED`，且未改动当前 IPv4 公网 IP。
+- 清理：本次创建的 E3/IPv6 测试实例均已 `TERMINATED`，终止任务使用 `preserveBootVolume=false`。
+
+历史未验证/未实现记录：
+
+- 自动为 IPv4-only VCN/Subnet 添加 IPv6 CIDR、复用 Internet Gateway、调整 route table/security list 并分配 VNIC IPv6 的 `additive` 路径已在 2026-06-10 完成真实 OCI 端到端验证。
+- NSG 专项、`clone_route_table` 路径、`replace_public_path` 强制模式和创建实例时绑定 reserved public IP 已在 2026-06-10 完成真实 OCI 验证。
+- 已有实例上的保留公网 IP 绑定、解绑、释放 UI 仍待实现。
+- E3 全量 smoke 中 `SOFTSTOP` 和 reinstall 后 OCI 存在较长后台修改窗口，已将 smoke 等待放宽并避免重复 stop，但完整 smoke 仍需要后续长跑复验。
+
 更新日期：2026-06-09
 
 本文记录真实 OCI API 验证结果。为了避免仓库包含账号元数据，所有真实 OCID、请求 ID、指纹和 IP 均已脱敏。
@@ -90,11 +209,12 @@
 
 - PostgreSQL migration 与持久恢复。
 - Instance Pool / Autoscaling。
-- 保留公网 IP 的绑定、解绑、释放。
+- 已有实例上的保留公网 IP 绑定、解绑、释放 UI。
 - Automation repository 与调度器。
 - Audit 查询、筛选和导出。
 - RBAC、审批流、预算护栏。
-- 通知渠道：Webhook、邮件。
+- 通知渠道：Webhook。
+- SMTP 邮件真实投递：接口和配置页已落地，仍需有效 SMTP 凭证后专项验证。
 
 ## 本地验证命令
 
@@ -107,3 +227,36 @@ npm run build
 ```
 
 真实 OCI 验证必须在配置 OCI Profile 后手动执行，不应使用 mock 输出替代。
+
+## 2026-06-11 校准记录
+
+本次新增真实验证：
+
+- SMTP 真实投递已验证：测试服务器 Docker 环境配置 SMTP 后，`POST /api/email/test` 返回 `verified=true`，测试邮件发送成功。仓库不保存 SMTP 密码。
+- Root tenancy 随机 root 密码 VM 已验证：通过 Web/API 创建临时 E3 Flex 公网测试实例，系统生成 root 密码并创建敏感站内通知，通知记录显示 `emailRequested=true`、`emailSent=true`。
+- SSH root 登录已验证：使用通知中的临时 root 密码登录测试实例成功。
+- 清理已完成：测试 VM 已终止并删除启动盘，临时 VCN/Subnet/IGW/Route Table/Security List 已删除；残留检查未发现 active `codex-rootpwd-*` 实例。
+
+本次新增本地验证：
+
+```powershell
+cd backend
+go test ./...
+
+cd ..
+npm run build
+```
+
+本次新增已落地但仍需专项真实环境验证：
+
+- `GET /api/audit-logs` 审计查询 API 与 Web 审计页面已落地；PostgreSQL 环境下需通过真实 DB 重启恢复测试校验查询结果。
+- Webhook 设置、测试发送 API 和 Web 配置页已落地；需要用户提供真实 Webhook URL 后做投递验证。
+- `app_settings` PostgreSQL 持久化表已落地，用于保存 Email/Webhook 控制台配置；仍需在真实 PostgreSQL 部署中验证重启恢复。
+
+仍未完成或未专项验证：
+
+- Instance Configuration / Instance Pool / Autoscaling 的真实 OCI executor。
+- RBAC 多用户、审批流、预算护栏。
+- Template CRUD 与模板版本化。
+- Automation repository、调度器、定时/指标策略真实执行。
+- 审计导出。

@@ -40,6 +40,7 @@ const (
 	InstanceRunning      InstanceStatus = "Running"
 	InstanceStopped      InstanceStatus = "Stopped"
 	InstanceProvisioning InstanceStatus = "Provisioning"
+	InstanceTerminating  InstanceStatus = "Terminating"
 	InstanceTerminated   InstanceStatus = "Terminated"
 )
 
@@ -120,6 +121,16 @@ type AuditLog struct {
 	CreatedAt        time.Time      `json:"createdAt"`
 }
 
+type AuditLogFilter struct {
+	Actor        string `json:"actor"`
+	Action       string `json:"action"`
+	ResourceType string `json:"resourceType"`
+	ResourceID   string `json:"resourceId"`
+	ProfileID    string `json:"profileId"`
+	Status       string `json:"status"`
+	Limit        int    `json:"limit"`
+}
+
 type InstanceTemplate struct {
 	ID             string            `json:"id"`
 	Name           string            `json:"name"`
@@ -198,6 +209,8 @@ type InstanceActionRequest struct {
 	TargetShape        string                  `json:"targetShape"`
 	TargetOCPUs        int                     `json:"targetOcpus"`
 	TargetMemoryGB     int                     `json:"targetMemoryGb"`
+	TargetBootVolumeGB int                     `json:"targetBootVolumeGb"`
+	ExpandBootVolume   bool                    `json:"expandBootVolume"`
 	SnapshotBefore     bool                    `json:"snapshotBefore"`
 	Note               string                  `json:"note"`
 }
@@ -225,13 +238,23 @@ type AutomationRule struct {
 }
 
 type IPTaskRequest struct {
-	Mode             string `json:"mode"`
-	ReservedPublicIP string `json:"reservedPublicIp"`
-	DNSLabel         string `json:"dnsLabel"`
-	VNICID           string `json:"vnicId"`
-	Note             string `json:"note"`
-	EnableIPv6       bool   `json:"enableIpv6"`
-	SnapshotBefore   bool   `json:"snapshotBefore"`
+	Mode                     string `json:"mode"`
+	ReservedPublicIP         string `json:"reservedPublicIp"`
+	DNSLabel                 string `json:"dnsLabel"`
+	VNICID                   string `json:"vnicId"`
+	Note                     string `json:"note"`
+	EnableIPv6               bool   `json:"enableIpv6"`
+	AutoConfigureIPv6        bool   `json:"autoConfigureIpv6"`
+	IPv6Strategy             string `json:"ipv6Strategy"`
+	NetworkChangeMode        string `json:"networkChangeMode"`
+	RouteTableMode           string `json:"routeTableMode"`
+	SecurityMode             string `json:"securityMode"`
+	AllowIrreversibleVCNIPv6 bool   `json:"allowIrreversibleVcnIpv6"`
+	AllowPublicIPv4Change    bool   `json:"allowPublicIpv4Change"`
+	OpenSSHIPv6              bool   `json:"openSshIpv6"`
+	OpenHTTPIPv6             bool   `json:"openHttpIpv6"`
+	OpenHTTPSIPv6            bool   `json:"openHttpsIpv6"`
+	SnapshotBefore           bool   `json:"snapshotBefore"`
 }
 
 type RebootInstanceRequest struct {
@@ -240,29 +263,35 @@ type RebootInstanceRequest struct {
 }
 
 type CreateInstanceRequest struct {
-	Name             string            `json:"name"`
-	ProfileID        string            `json:"profileId"`
-	Region           string            `json:"region"`
-	Compartment      string            `json:"compartment"`
-	CompartmentID    string            `json:"compartmentId"`
-	AvailabilityAD   string            `json:"availabilityAd"`
-	TemplateID       string            `json:"templateId"`
-	ImageID          string            `json:"imageId"`
-	Shape            string            `json:"shape"`
-	OCPUs            int               `json:"ocpus"`
-	MemoryGB         int               `json:"memoryGb"`
-	BootVolumeGB     int               `json:"bootVolumeGb"`
-	AssignPublicIP   bool              `json:"assignPublicIp"`
-	EnableIPv6       bool              `json:"enableIpv6"`
-	ReservedPublicIP string            `json:"reservedPublicIp"`
-	VCNID            string            `json:"vcnId"`
-	SubnetID         string            `json:"subnetId"`
-	SSHKey           string            `json:"sshKey"`
-	CloudInit        string            `json:"cloudInit"`
-	Tags             map[string]string `json:"tags"`
-	MaxRetries       int               `json:"maxRetries"`
-	RequireApproval  bool              `json:"requireApproval"`
-	SnapshotBefore   bool              `json:"snapshotBefore"`
+	Name                 string            `json:"name"`
+	ProfileID            string            `json:"profileId"`
+	Region               string            `json:"region"`
+	Compartment          string            `json:"compartment"`
+	CompartmentID        string            `json:"compartmentId"`
+	AvailabilityAD       string            `json:"availabilityAd"`
+	TemplateID           string            `json:"templateId"`
+	ImageID              string            `json:"imageId"`
+	Shape                string            `json:"shape"`
+	OCPUs                int               `json:"ocpus"`
+	MemoryGB             int               `json:"memoryGb"`
+	BootVolumeGB         int               `json:"bootVolumeGb"`
+	AssignPublicIP       bool              `json:"assignPublicIp"`
+	EnableIPv6           bool              `json:"enableIpv6"`
+	ReservedPublicIP     string            `json:"reservedPublicIp"`
+	VCNID                string            `json:"vcnId"`
+	SubnetID             string            `json:"subnetId"`
+	SSHKey               string            `json:"sshKey"`
+	CloudInit            string            `json:"cloudInit"`
+	Tags                 map[string]string `json:"tags"`
+	MaxRetries           int               `json:"maxRetries"`
+	RetryMode            string            `json:"retryMode"`
+	RetryMaxAttempts     int               `json:"retryMaxAttempts"`
+	RetryDelayMinSec     int               `json:"retryDelayMinSeconds"`
+	RetryDelayMaxSec     int               `json:"retryDelayMaxSeconds"`
+	RequireApproval      bool              `json:"requireApproval"`
+	SnapshotBefore       bool              `json:"snapshotBefore"`
+	GenerateRootPassword bool              `json:"generateRootPassword"`
+	NotifyRootPassword   bool              `json:"notifyRootPassword"`
 }
 
 type CreateInstanceResponse struct {
@@ -290,4 +319,85 @@ type AutomationTaskRequest struct {
 type AutomationTaskResponse struct {
 	Rule AutomationRule `json:"rule"`
 	Job  Job            `json:"job"`
+}
+
+type NotificationSeverity string
+
+const (
+	NotificationInfo    NotificationSeverity = "info"
+	NotificationSuccess NotificationSeverity = "success"
+	NotificationWarning NotificationSeverity = "warning"
+	NotificationError   NotificationSeverity = "error"
+)
+
+type Notification struct {
+	ID             string               `json:"id"`
+	Title          string               `json:"title"`
+	Message        string               `json:"message"`
+	Severity       NotificationSeverity `json:"severity"`
+	Category       string               `json:"category"`
+	ResourceType   string               `json:"resourceType,omitempty"`
+	ResourceID     string               `json:"resourceId,omitempty"`
+	ProfileID      string               `json:"profileId,omitempty"`
+	Region         string               `json:"region,omitempty"`
+	CompartmentID  string               `json:"compartmentId,omitempty"`
+	Sensitive      bool                 `json:"sensitive"`
+	Read           bool                 `json:"read"`
+	EmailRequested bool                 `json:"emailRequested"`
+	EmailSent      bool                 `json:"emailSent"`
+	EmailError     string               `json:"emailError,omitempty"`
+	WebhookSent    bool                 `json:"webhookSent"`
+	WebhookError   string               `json:"webhookError,omitempty"`
+	CreatedBy      string               `json:"createdBy"`
+	CreatedAt      time.Time            `json:"createdAt"`
+	ReadAt         *time.Time           `json:"readAt,omitempty"`
+}
+
+type NotificationRequest struct {
+	Title          string               `json:"title"`
+	Message        string               `json:"message"`
+	Severity       NotificationSeverity `json:"severity"`
+	Category       string               `json:"category"`
+	ResourceType   string               `json:"resourceType"`
+	ResourceID     string               `json:"resourceId"`
+	ProfileID      string               `json:"profileId"`
+	Region         string               `json:"region"`
+	CompartmentID  string               `json:"compartmentId"`
+	Sensitive      bool                 `json:"sensitive"`
+	EmailRequested bool                 `json:"emailRequested"`
+}
+
+type EmailSettings struct {
+	Enabled     bool     `json:"enabled"`
+	Host        string   `json:"host"`
+	Port        int      `json:"port"`
+	Username    string   `json:"username"`
+	Password    string   `json:"password,omitempty"`
+	PasswordSet bool     `json:"passwordSet"`
+	From        string   `json:"from"`
+	To          []string `json:"to"`
+	UseTLS      bool     `json:"useTls"`
+	StartTLS    bool     `json:"startTls"`
+}
+
+type WebhookSettings struct {
+	Enabled   bool              `json:"enabled"`
+	URL       string            `json:"url"`
+	Secret    string            `json:"secret,omitempty"`
+	SecretSet bool              `json:"secretSet"`
+	Headers   map[string]string `json:"headers,omitempty"`
+}
+
+type EmailTestRequest struct {
+	To string `json:"to"`
+}
+
+type EmailTestResult struct {
+	Verified bool   `json:"verified"`
+	Message  string `json:"message"`
+}
+
+type WebhookTestResult struct {
+	Verified bool   `json:"verified"`
+	Message  string `json:"message"`
 }

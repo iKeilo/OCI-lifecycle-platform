@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -18,6 +19,8 @@ type Config struct {
 	OCI           OCIConfig
 	Database      DatabaseConfig
 	Security      SecurityConfig
+	Email         EmailConfig
+	Webhook       WebhookConfig
 	StaticDir     string
 }
 
@@ -41,6 +44,24 @@ type SecurityConfig struct {
 	PanelPassword           string
 	PanelSessionSecret      string
 	PanelAuthDisabled       bool
+}
+
+type EmailConfig struct {
+	Enabled  bool
+	Host     string
+	Port     int
+	Username string
+	Password string
+	From     string
+	To       []string
+	UseTLS   bool
+	StartTLS bool
+}
+
+type WebhookConfig struct {
+	Enabled bool
+	URL     string
+	Secret  string
 }
 
 func Load() Config {
@@ -67,6 +88,22 @@ func Load() Config {
 			PanelSessionSecret:      env("PANEL_SESSION_SECRET", ""),
 			PanelAuthDisabled:       envBool("PANEL_AUTH_DISABLED", false),
 		},
+		Email: EmailConfig{
+			Enabled:  envBool("SMTP_ENABLED", false),
+			Host:     env("SMTP_HOST", ""),
+			Port:     envInt("SMTP_PORT", 587),
+			Username: env("SMTP_USERNAME", ""),
+			Password: env("SMTP_PASSWORD", ""),
+			From:     env("SMTP_FROM", ""),
+			To:       envList("SMTP_TO"),
+			UseTLS:   envBool("SMTP_USE_TLS", false),
+			StartTLS: envBool("SMTP_STARTTLS", true),
+		},
+		Webhook: WebhookConfig{
+			Enabled: envBool("WEBHOOK_ENABLED", false),
+			URL:     env("WEBHOOK_URL", ""),
+			Secret:  env("WEBHOOK_SECRET", ""),
+		},
 	}
 }
 
@@ -90,4 +127,32 @@ func envBool(key string, fallback bool) bool {
 		return fallback
 	}
 	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func envInt(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func envList(key string) []string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }

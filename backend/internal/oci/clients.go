@@ -16,6 +16,7 @@ type Clients struct {
 	Identity       identity.IdentityClient
 	Compute        core.ComputeClient
 	VirtualNetwork core.VirtualNetworkClient
+	Blockstorage   core.BlockstorageClient
 	WorkRequests   workrequests.WorkRequestClient
 }
 
@@ -51,6 +52,10 @@ func NewClients(cfg ReadinessConfig) (Clients, error) {
 	if err != nil {
 		return Clients{}, err
 	}
+	blockstorageClient, err := core.NewBlockstorageClientWithConfigurationProvider(provider)
+	if err != nil {
+		return Clients{}, err
+	}
 	workRequestClient, err := workrequests.NewWorkRequestClientWithConfigurationProvider(provider)
 	if err != nil {
 		return Clients{}, err
@@ -60,6 +65,7 @@ func NewClients(cfg ReadinessConfig) (Clients, error) {
 		Identity:       identityClient,
 		Compute:        computeClient,
 		VirtualNetwork: networkClient,
+		Blockstorage:   blockstorageClient,
 		WorkRequests:   workRequestClient,
 	}, nil
 }

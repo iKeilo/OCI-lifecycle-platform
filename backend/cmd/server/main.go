@@ -41,6 +41,28 @@ func main() {
 	}
 
 	appStore := store.New()
+	if _, err := appStore.SetEmailSettings(domain.EmailSettings{
+		Enabled:  cfg.Email.Enabled,
+		Host:     cfg.Email.Host,
+		Port:     cfg.Email.Port,
+		Username: cfg.Email.Username,
+		Password: cfg.Email.Password,
+		From:     cfg.Email.From,
+		To:       cfg.Email.To,
+		UseTLS:   cfg.Email.UseTLS,
+		StartTLS: cfg.Email.StartTLS,
+	}); err != nil {
+		slog.Error("email settings setup failed", "error", err)
+		os.Exit(1)
+	}
+	if _, err := appStore.SetWebhookSettings(domain.WebhookSettings{
+		Enabled: cfg.Webhook.Enabled,
+		URL:     cfg.Webhook.URL,
+		Secret:  cfg.Webhook.Secret,
+	}); err != nil {
+		slog.Error("webhook settings setup failed", "error", err)
+		os.Exit(1)
+	}
 	var recoveredJobs []string
 	if dbConn != nil {
 		persistence := db.NewPostgresSink(dbConn)
@@ -61,6 +83,10 @@ func main() {
 		}
 		appStore.ReplaceInstances(instances)
 		appStore.SetPersistenceSink(persistence)
+		if err := appStore.LoadPersistedSettings(); err != nil {
+			slog.Error("database settings load failed", "error", err)
+			os.Exit(1)
+		}
 		persistedJobs, err := persistence.ListJobs()
 		if err != nil {
 			slog.Error("database job load failed", "error", err)

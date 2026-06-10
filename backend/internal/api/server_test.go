@@ -437,10 +437,12 @@ func TestOCIModeCreateIPTaskCreatesIPv6Job(t *testing.T) {
 	}).Handler()
 	instanceID := "ocid1.instance.oc1.ap-chuncheon-1.example"
 	res := postJSON(t, server, "/api/instances/"+instanceID+"/ip-tasks", map[string]any{
-		"mode":           "enable-ipv6",
-		"vnicId":         "primary",
-		"enableIpv6":     true,
-		"snapshotBefore": true,
+		"mode":              "enable-ipv6",
+		"vnicId":            "primary",
+		"enableIpv6":        true,
+		"autoConfigureIpv6": true,
+		"ipv6Strategy":      "replace_gateway",
+		"snapshotBefore":    true,
 	})
 
 	if res.Code != http.StatusAccepted {
@@ -452,7 +454,7 @@ func TestOCIModeCreateIPTaskCreatesIPv6Job(t *testing.T) {
 		Input      map[string]any `json:"input"`
 	}
 	decodeTestJSON(t, res.Body.Bytes(), &body)
-	if body.ResourceID != instanceID || body.Input["operation"] != "ip-management" || body.Input["enableIpv6"] != true {
+	if body.ResourceID != instanceID || body.Input["operation"] != "ip-management" || body.Input["enableIpv6"] != true || body.Input["ipv6Strategy"] != "replace_gateway" || body.Input["mayReplacePublicIPv4"] != false {
 		t.Fatalf("unexpected OCI IP job: %#v", body)
 	}
 	if queued != body.ID {
@@ -496,6 +498,79 @@ func TestOCIModeCreateInstanceCreatesLaunchJobWithoutPlaceholder(t *testing.T) {
 	}
 	if queued != body.ID {
 		t.Fatalf("expected launch job to be queued, queued=%s body=%s", queued, body.ID)
+	}
+}
+
+func TestRootTenancyCreateInstanceGeneratesSensitiveNotification(t *testing.T) {
+	queued := ""
+	tenancyID := "ocid1.tenancy.oc1..example"
+	server := NewServerWithOptions(store.NewSeeded(), ServerOptions{
+		ExecutionMode: "oci",
+		Enqueue: func(jobID string) {
+			queued = jobID
+		},
+		OCIReadiness: oci.ReadinessConfig{
+			ExecutionMode: "oci",
+			TenancyOCID:   tenancyID,
+			Region:        "ap-chuncheon-1",
+		},
+	}).Handler()
+
+	res := postJSON(t, server, "/api/instances", map[string]any{
+		"name":                 "root-password-test",
+		"compartmentId":        tenancyID,
+		"shape":                "VM.Standard.E2.1.Micro",
+		"ocpus":                1,
+		"memoryGb":             1,
+		"bootVolumeGb":         50,
+		"generateRootPassword": true,
+		"notifyRootPassword":   true,
+	})
+
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", res.Code, res.Body.String())
+	}
+	var body struct {
+		ID    string         `json:"id"`
+		Input map[string]any `json:"input"`
+	}
+	decodeTestJSON(t, res.Body.Bytes(), &body)
+	if queued != body.ID {
+		t.Fatalf("expected launch job to be queued, queued=%s body=%s", queued, body.ID)
+	}
+	if _, ok := body.Input["cloudInit"]; ok {
+		t.Fatalf("cloudInit must be redacted from API response: %#v", body.Input)
+	}
+	if body.Input["cloudInitRedacted"] != true {
+		t.Fatalf("expected cloudInitRedacted flag, got %#v", body.Input)
+	}
+
+	list := httptest.NewRecorder()
+	server.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/notifications?unread=true", nil))
+	if list.Code != http.StatusOK {
+		t.Fatalf("expected notification list 200, got %d body=%s", list.Code, list.Body.String())
+	}
+	var notifications struct {
+		UnreadCount int `json:"unreadCount"`
+		Items       []struct {
+			Title          string `json:"title"`
+			Category       string `json:"category"`
+			Sensitive      bool   `json:"sensitive"`
+			EmailRequested bool   `json:"emailRequested"`
+			EmailSent      bool   `json:"emailSent"`
+			EmailError     string `json:"emailError"`
+		} `json:"items"`
+	}
+	decodeTestJSON(t, list.Body.Bytes(), &notifications)
+	if notifications.UnreadCount == 0 || len(notifications.Items) == 0 {
+		t.Fatalf("expected unread sensitive notification, got %#v", notifications)
+	}
+	notice := notifications.Items[0]
+	if notice.Title != "Root password generated: root-password-test" || notice.Category != "credential" || !notice.Sensitive || !notice.EmailRequested {
+		t.Fatalf("unexpected notification: %#v", notice)
+	}
+	if notice.EmailSent || notice.EmailError == "" {
+		t.Fatalf("email should be recorded as not sent when SMTP is disabled: %#v", notice)
 	}
 }
 

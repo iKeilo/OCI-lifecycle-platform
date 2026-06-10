@@ -5,10 +5,12 @@ import { AuditPage } from "../pages/AuditPage";
 import { AutomationsPage } from "../pages/AutomationsPage";
 import { CreateInstancePage } from "../pages/CreateInstancePage";
 import { DashboardPage } from "../pages/DashboardPage";
+import { EmailPage } from "../pages/EmailPage";
 import { InstancesPage } from "../pages/InstancesPage";
 import { JobsPage } from "../pages/JobsPage";
 import { LoginPage } from "../pages/LoginPage";
 import { MonitoringPage } from "../pages/MonitoringPage";
+import { NotificationsPage } from "../pages/NotificationsPage";
 import { PlaceholderPage } from "../pages/PlaceholderPage";
 import { ProfilesPage } from "../pages/ProfilesPage";
 import { ResourcePoolsPage } from "../pages/ResourcePoolsPage";
@@ -84,9 +86,9 @@ export function App() {
         <Route path="/audit" element={<AuditPage />} />
         <Route path="/users" element={<UsersPage />} />
         <Route path="/object-storage" element={<PlaceholderPage title="对象存储" subtitle="Bucket、对象、策略和生命周期任务将在这里管理。" />} />
-        <Route path="/email" element={<PlaceholderPage title="邮件服务" subtitle="通知发信配置、模板和投递日志将在这里管理。" />} />
+        <Route path="/email" element={<EmailPage />} />
         <Route path="/guardrails" element={<PlaceholderPage title="安全护栏" subtitle="自动化、预算、区域和危险操作的全局限制将在这里配置。" />} />
-        <Route path="/notifications" element={<PlaceholderPage title="通知设置" subtitle="邮件、Webhook 和任务失败通知路由将在这里配置。" />} />
+        <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

@@ -713,6 +713,12 @@ kbd {
   background: rgba(216, 226, 255, 0.64);
 }
 
+.status-pill.terminating {
+  color: #9a3412;
+  border-color: rgba(234, 88, 12, 0.24);
+  background: rgba(255, 237, 213, 0.78);
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: 0.9fr 1.4fr;
@@ -1128,6 +1134,10 @@ kbd {
   background: rgba(244, 243, 248, 0.56);
 }
 
+.form-section.compact {
+  margin-top: 0;
+}
+
 .form-section-title {
   gap: 8px;
   margin-bottom: 16px;
@@ -1170,10 +1180,77 @@ kbd {
   line-height: 1.45;
 }
 
+.retry-policy-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.48fr);
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.retry-choice-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.retry-policy-panel {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid rgba(145, 111, 106, 0.16);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 8px;
+  color: #4b211e;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.inline-number-range {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.inline-number-range span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: max-content;
+  padding: 8px 11px;
+  color: #71625f;
+  border: 1px solid rgba(145, 111, 106, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.status-chip.success {
+  color: #106739;
+  border-color: rgba(21, 128, 61, 0.22);
+  background: rgba(220, 252, 231, 0.72);
+}
+
 .switch-panel {
   display: grid;
   gap: 12px;
   margin-top: 22px;
+}
+
+.switch-panel.nested {
+  margin-top: 14px;
+  gap: 10px;
 }
 
 .switch-row {
@@ -1184,6 +1261,27 @@ kbd {
   border: 1px solid rgba(145, 111, 106, 0.14);
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.52);
+}
+
+.switch-panel.nested .switch-row {
+  min-height: 64px;
+  padding: 13px 15px;
+}
+
+.switch-row.danger-row {
+  border-color: rgba(190, 18, 60, 0.22);
+  background: rgba(255, 241, 242, 0.72);
+}
+
+.switch-row.warning-row {
+  border-color: rgba(234, 88, 12, 0.24);
+  background: rgba(255, 247, 237, 0.78);
+}
+
+.inline-toggle-group {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 10px;
 }
 
 .switch-row strong {
@@ -1228,6 +1326,11 @@ kbd {
   transform: translateX(20px);
 }
 
+.toggle-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 .modal-warning {
   gap: 10px;
   margin-top: 22px;
@@ -1237,6 +1340,137 @@ kbd {
   border-radius: 16px;
   background: rgba(255, 239, 222, 0.72);
   line-height: 1.45;
+}
+
+.notification-button {
+  position: relative;
+  text-decoration: none;
+}
+
+.notification-button span {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--primary);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 18px;
+}
+
+.notification-list {
+  display: grid;
+  gap: 14px;
+}
+
+.notification-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 16px;
+  padding: 18px;
+  border-radius: 18px;
+}
+
+.notification-card.unread {
+  border-color: rgba(0, 103, 220, 0.28);
+}
+
+.notification-card.warning {
+  background: rgba(255, 247, 237, 0.7);
+}
+
+.notification-card.error {
+  background: rgba(255, 241, 242, 0.76);
+}
+
+.notification-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  color: var(--blue);
+  border-radius: 12px;
+  background: rgba(0, 103, 220, 0.1);
+}
+
+.notification-body pre {
+  margin: 10px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #202124;
+  font-family: inherit;
+  line-height: 1.55;
+}
+
+.notification-title-row,
+.notification-meta,
+.email-test-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.notification-title-row {
+  justify-content: space-between;
+}
+
+.notification-title-row h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.notification-title-row span,
+.notification-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.notification-meta {
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.sensitive-chip,
+.email-chip {
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-weight: 800;
+}
+
+.sensitive-chip {
+  color: #9a3412;
+  background: rgba(255, 237, 213, 0.9);
+}
+
+.email-chip.sent {
+  color: #006f35;
+  background: rgba(0, 150, 66, 0.12);
+}
+
+.email-chip.failed {
+  color: var(--primary);
+  background: rgba(255, 218, 213, 0.74);
+}
+
+.muted-icon {
+  color: var(--muted);
+}
+
+.compact-switches {
+  margin-top: 18px;
+}
+
+.email-test-row {
+  align-items: end;
+  margin-top: 20px;
+}
+
+.email-test-row label {
+  flex: 1;
 }
 
 .inline-success,
@@ -1332,12 +1566,73 @@ kbd {
   margin-top: 26px;
 }
 
+.toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.detail-grid div {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.detail-grid span,
+.detail-grid strong {
+  display: block;
+}
+
+.detail-grid span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.detail-grid strong {
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+
+.code-preview {
+  margin: 18px 0 0;
+  padding: 14px;
+  overflow: auto;
+  color: #2c1715;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.success-text {
+  color: #006f35;
+  font-weight: 800;
+}
+
+.danger-text {
+  color: var(--primary);
+  font-weight: 800;
+}
+
 label {
   display: grid;
   gap: 8px;
   color: #4b211e;
   font-size: 13px;
   font-weight: 800;
+}
+
+.wide-label {
+  margin-top: 18px;
 }
 
 input,
@@ -1604,6 +1899,11 @@ td {
   }
 
   .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .retry-policy-layout,
+  .retry-choice-grid {
     grid-template-columns: 1fr;
   }
 

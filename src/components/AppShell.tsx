@@ -1,8 +1,8 @@
 import { Bell, ChevronDown, Languages, LogOut, Moon, RefreshCw, Search, Settings2 } from "lucide-react";
 import { useEffect, useMemo, useState, type PropsWithChildren } from "react";
-import { NavLink } from "react-router-dom";
+import { Link, NavLink } from "react-router-dom";
 import { navGroups, productMark as ProductMark } from "../app/navigation";
-import { getOCIReadiness, listProfiles } from "../services/api";
+import { getOCIReadiness, listNotifications, listProfiles } from "../services/api";
 import type { OCIReadiness, Profile } from "../services/api";
 
 type AppShellProps = PropsWithChildren<{
@@ -12,15 +12,17 @@ type AppShellProps = PropsWithChildren<{
 export function AppShell({ children, onLogout }: AppShellProps) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [readiness, setReadiness] = useState<OCIReadiness | null>(null);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     async function loadContext() {
       try {
-        const [nextProfiles, nextReadiness] = await Promise.all([listProfiles(), getOCIReadiness()]);
+        const [nextProfiles, nextReadiness, notifications] = await Promise.all([listProfiles(), getOCIReadiness(), listNotifications(true)]);
         if (!cancelled) {
           setProfiles(nextProfiles);
           setReadiness(nextReadiness);
+          setUnreadNotifications(notifications.unreadCount);
         }
       } catch {
         if (!cancelled) {
@@ -112,9 +114,10 @@ export function AppShell({ children, onLogout }: AppShellProps) {
             <button className="icon-button" aria-label="设置">
               <Settings2 size={20} />
             </button>
-            <button className="icon-button" aria-label="通知">
+            <Link className="icon-button notification-button" aria-label="通知" to="/notifications">
               <Bell size={20} />
-            </button>
+              {unreadNotifications > 0 ? <span>{unreadNotifications > 99 ? "99+" : unreadNotifications}</span> : null}
+            </Link>
             <button className="icon-button" aria-label="退出" onClick={() => void onLogout?.()}>
               <LogOut size={20} />
             </button>

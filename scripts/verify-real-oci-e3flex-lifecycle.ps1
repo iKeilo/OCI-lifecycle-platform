@@ -3,7 +3,7 @@ param(
   [string]$CompartmentId = "",
   [string]$SubnetId = "",
   [string]$ImageId = "",
-  [int64]$BootVolumeGb = 10
+  [int64]$BootVolumeGb = 50
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,7 +18,7 @@ if (-not $readiness.ready) {
   throw "OCI is not ready for real E3 Flex lifecycle validation. $($readiness.message)$missing"
 }
 
-Write-Host "[2/2] Create VM.Standard.E3.Flex 1C/1G and run lifecycle validation"
+Write-Host "[2/2] Create VM.Standard.E3.Flex 1C/1G/50G and run lifecycle, +10G expand, -10G rejection validation"
 $payload = @{
   compartmentId = $CompartmentId
   subnetId = $SubnetId

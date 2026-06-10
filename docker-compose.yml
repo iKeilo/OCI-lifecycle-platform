@@ -24,6 +24,18 @@ services:
       OCI_PRIVATE_KEY_PATH: ${OCI_PRIVATE_KEY_PATH:-}
       OCI_REGION: ${OCI_REGION:-}
       OCI_COMPARTMENT_OCID: ${OCI_COMPARTMENT_OCID:-}
+      SMTP_ENABLED: ${SMTP_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_TO: ${SMTP_TO:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-false}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+      WEBHOOK_ENABLED: ${WEBHOOK_ENABLED:-false}
+      WEBHOOK_URL: ${WEBHOOK_URL:-}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - oci-profile-data:/data
