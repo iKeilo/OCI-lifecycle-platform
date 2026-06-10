@@ -1,6 +1,7 @@
 # OCI Lifecycle Platform
 
 > 项目结构入口：[docs/project-directory.md](docs/project-directory.md)
+> Release / Packages：[docs/github-release-packages.md](docs/github-release-packages.md)
 
 OCI Lifecycle Platform 是一个面向 Oracle Cloud Infrastructure 的机器生命周期控制平台。目标不是把几个 OCI API 包一层按钮，而是提供一套可登录、可审计、可任务化、可自动化扩展的资源编排控制台。
 

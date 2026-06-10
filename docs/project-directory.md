@@ -73,6 +73,7 @@
 | `docs/one-click-install.md` | 一键安装脚本说明。 |
 | `docs/docker-install.md` | Docker 版部署说明。 |
 | `docs/linux-install.md` | 原生 Linux/systemd 部署说明。 |
+| `docs/github-release-packages.md` | GitHub Releases 与 GHCR Packages 发布说明。 |
 
 ## 部署入口
 
@@ -80,6 +81,12 @@ Docker 一键安装：
 
 ```bash
 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
+```
+
+使用 GitHub Packages 镜像安装：
+
+```bash
+OCI_LIFECYCLE_USE_PACKAGE=true bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
 ```
 
 原生 Linux/systemd 一键安装：
@@ -135,4 +142,3 @@ npm run build
 | Template CRUD | 页面入口存在，真实模板版本化与创建实例绑定待补齐。 |
 | 自动化 scheduler | 策略页面存在，真实周期触发、冷却和执行链路待补齐。 |
 | 审计导出 | 查询已落地，导出能力待补齐。 |
-

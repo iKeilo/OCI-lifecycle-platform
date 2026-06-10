@@ -16,7 +16,14 @@ DOCKER_SRC_DIR="$DOCKER_APP_DIR/src"
 DOCKER_COMPOSE_FILE="$DOCKER_SRC_DIR/docker-compose.yml"
 DOCKER_ENV_FILE="${DOCKER_ENV_FILE:-$ENV_DIR/docker.env}"
 DOCKER_KEY_DIR="${OCI_KEY_DIR:-$ENV_DIR/keys}"
-DOCKER_IMAGE="${OCI_LIFECYCLE_IMAGE:-oci-lifecycle-platform:local}"
+DOCKER_PACKAGE_IMAGE="${OCI_LIFECYCLE_PACKAGE_IMAGE:-ghcr.io/ikeilo/oci-lifecycle-platform}"
+DOCKER_PACKAGE_TAG="${OCI_LIFECYCLE_IMAGE_TAG:-latest}"
+DOCKER_USE_PACKAGE="${OCI_LIFECYCLE_USE_PACKAGE:-false}"
+if [[ "$DOCKER_USE_PACKAGE" == "true" && -z "${OCI_LIFECYCLE_IMAGE:-}" ]]; then
+  DOCKER_IMAGE="${DOCKER_PACKAGE_IMAGE}:${DOCKER_PACKAGE_TAG}"
+else
+  DOCKER_IMAGE="${OCI_LIFECYCLE_IMAGE:-oci-lifecycle-platform:local}"
+fi
 DOCKER_WEB_PORT="${WEB_PORT_INPUT:-18080}"
 DOCKER_WEB_PORT_EXPLICIT=0
 [[ -n "$WEB_PORT_INPUT" ]] && DOCKER_WEB_PORT_EXPLICIT=1
@@ -70,6 +77,9 @@ Environment:
   WEB_PORT                   web listen port. Docker default 18080, systemd default 80.
   USE_NGINX                  true, false, or auto. auto uses nginx only when already installed.
   GO_PROXY                   Optional Go module proxy, passed to GOPROXY.
+  OCI_LIFECYCLE_USE_PACKAGE  Docker mode only. true pulls GHCR image instead of building locally.
+  OCI_LIFECYCLE_IMAGE        Docker image override. Default local build image or GHCR when package mode is enabled.
+  OCI_LIFECYCLE_IMAGE_TAG    GHCR image tag for package mode, default latest.
   GO_ROOT                    Go toolchain directory, default APP_DIR/.toolchain/go.
   SYSTEMD_DIR                systemd unit directory, default /etc/systemd/system.
   BACKUP_DIR                 Backup output directory, default /root.
@@ -864,6 +874,11 @@ docker_current_image() {
 
 docker_build_image() {
   [[ -f "$DOCKER_COMPOSE_FILE" ]] || die "missing compose file: $DOCKER_COMPOSE_FILE"
+  if [[ "$DOCKER_USE_PACKAGE" == "true" ]]; then
+    log "pulling Docker package $(docker_current_image)"
+    docker pull "$(docker_current_image)"
+    return
+  fi
   log "building Docker image $(docker_current_image)"
   docker_compose build app
 }

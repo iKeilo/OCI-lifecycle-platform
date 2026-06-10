@@ -28,6 +28,8 @@ Environment:
   OCI_LIFECYCLE_BRANCH       GitHub branch, default main.
   OCI_LIFECYCLE_REPO_OWNER   GitHub owner, default iKeilo.
   OCI_LIFECYCLE_REPO_NAME    GitHub repo, default OCI-lifecycle-platform.
+  OCI_LIFECYCLE_USE_PACKAGE  true pulls ghcr.io/ikeilo/oci-lifecycle-platform instead of building locally.
+  OCI_LIFECYCLE_IMAGE_TAG    GHCR image tag for package mode, default latest.
   PANEL_PASSWORD             Optional non-interactive panel password.
   PANEL_PASSWORD_FILE        File used when a random panel password is generated.
   WEB_PORT                   Docker default 18080, systemd default 80.
@@ -45,7 +47,10 @@ if [[ "$(id -u)" -ne 0 ]]; then
       OCI_LIFECYCLE_BRANCH="$BRANCH" \
       OCI_LIFECYCLE_REPO_OWNER="$REPO_OWNER" \
       OCI_LIFECYCLE_REPO_NAME="$REPO_NAME" \
+      OCI_LIFECYCLE_USE_PACKAGE="${OCI_LIFECYCLE_USE_PACKAGE:-}" \
       OCI_LIFECYCLE_IMAGE="${OCI_LIFECYCLE_IMAGE:-}" \
+      OCI_LIFECYCLE_IMAGE_TAG="${OCI_LIFECYCLE_IMAGE_TAG:-}" \
+      OCI_LIFECYCLE_PACKAGE_IMAGE="${OCI_LIFECYCLE_PACKAGE_IMAGE:-}" \
       DEPLOY_MODE="${DEPLOY_MODE:-}" \
       DOCKER_APP_DIR="${DOCKER_APP_DIR:-}" \
       DOCKER_ENV_FILE="${DOCKER_ENV_FILE:-}" \
