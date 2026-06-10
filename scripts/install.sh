@@ -739,7 +739,9 @@ docker_ensure_env_defaults() {
   fi
 
   [[ -n "$(docker_env_get COMPOSE_PROJECT_NAME)" ]] || docker_env_set COMPOSE_PROJECT_NAME "$APP_NAME"
-  if [[ -n "${OCI_LIFECYCLE_IMAGE:-}" ]]; then
+  if [[ "$DOCKER_USE_PACKAGE" == "true" && -z "${OCI_LIFECYCLE_IMAGE:-}" ]]; then
+    docker_env_set OCI_LIFECYCLE_IMAGE "$DOCKER_IMAGE"
+  elif [[ -n "${OCI_LIFECYCLE_IMAGE:-}" ]]; then
     docker_env_set OCI_LIFECYCLE_IMAGE "$DOCKER_IMAGE"
   else
     [[ -n "$(docker_env_get OCI_LIFECYCLE_IMAGE)" ]] || docker_env_set OCI_LIFECYCLE_IMAGE "$DOCKER_IMAGE"
