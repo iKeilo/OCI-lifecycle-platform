@@ -19,7 +19,7 @@ bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/m
 交互安装时：
 
 - Web 端口直接回车会随机分配可用端口。
-- 第一次输入面板密码时直接回车会随机生成密码，安装器会在终端打印一次，并保存到 `/etc/oci-lifecycle-platform/panel-password.txt`。
+- 第一次输入面板密码时直接回车会随机生成密码，安装器只会在终端打印一次，不会保存到服务器文件。
 - 安装脚本默认设置 `OCI_EXECUTION_MODE=oci`，Profile 测试会直接调用真实 OCI API。
 
 如果已经克隆仓库，也可以执行：
@@ -77,18 +77,12 @@ sudo bash scripts/install.sh --systemd install
 sudo bash scripts/install.sh
 ```
 
-菜单包含 10 个选项：
+菜单包含 4 个选项：
 
 1. Install / first setup
-2. Update application
-3. Change panel login password
-4. Configure OCI env fallback
-5. Start services
-6. Stop services
-7. Restart services
-8. Status and logs
-9. Backup local config
-10. Uninstall
+2. Update from GitHub latest
+3. Uninstall
+4. Reset panel login password
 
 ## 从 GitHub 安装
 
@@ -257,7 +251,6 @@ sudo bash scripts/install.sh uninstall
 | `OCI_LIFECYCLE_REPO_URL` | Git 仓库地址 | `https://github.com/iKeilo/OCI-lifecycle-platform.git` |
 | `OCI_LIFECYCLE_BRANCH` | Git 分支 | `main` |
 | `PANEL_PASSWORD` | 非交互安装/改密码输入 | 空 |
-| `PANEL_PASSWORD_FILE` | 随机生成面板密码时的保存文件 | `$ENV_DIR/panel-password.txt` |
 | `OCI_EXECUTION_MODE` | 执行模式，生产默认应为真实 OCI SDK | `oci` |
 | `WEB_PORT` | Web 监听端口 | `80` |
 | `USE_NGINX` | `true` / `false` / `auto` | `auto` |

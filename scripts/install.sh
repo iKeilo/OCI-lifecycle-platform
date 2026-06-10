@@ -27,7 +27,6 @@ fi
 DOCKER_WEB_PORT="${WEB_PORT_INPUT:-18080}"
 DOCKER_WEB_PORT_EXPLICIT=0
 [[ -n "$WEB_PORT_INPUT" ]] && DOCKER_WEB_PORT_EXPLICIT=1
-PANEL_PASSWORD_FILE="${PANEL_PASSWORD_FILE:-$ENV_DIR/panel-password.txt}"
 SERVICE_NAME="${SERVICE_NAME:-oci-lifecycle-platform}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 SERVICE_FILE="${SYSTEMD_DIR}/${SERVICE_NAME}.service"
@@ -73,7 +72,6 @@ Environment:
   A_SERIES_ORACLE_REPO_URL   Backward-compatible alias for OCI_LIFECYCLE_REPO_URL.
   A_SERIES_ORACLE_BRANCH     Backward-compatible alias for OCI_LIFECYCLE_BRANCH.
   PANEL_PASSWORD             Non-interactive install/change-password password input.
-  PANEL_PASSWORD_FILE        File used when the installer generates a random panel password.
   WEB_PORT                   web listen port. Docker default 18080, systemd default 80.
   USE_NGINX                  true, false, or auto. auto uses nginx only when already installed.
   GO_PROXY                   Optional Go module proxy, passed to GOPROXY.
@@ -357,7 +355,7 @@ read_password() {
   local first second
   if [[ ! -t 0 ]]; then
     first="$(openssl rand -hex 12)"
-    save_generated_panel_password "$first"
+    print_generated_panel_password "$first"
     printf '%s\n' "$first"
     return
   fi
@@ -366,7 +364,7 @@ read_password() {
   printf '\n'
   if [[ -z "$first" ]]; then
     first="$(openssl rand -hex 12)"
-    save_generated_panel_password "$first"
+    print_generated_panel_password "$first"
     printf '%s\n' "$first"
     return
   fi
@@ -377,13 +375,9 @@ read_password() {
   printf '%s\n' "$first"
 }
 
-save_generated_panel_password() {
+print_generated_panel_password() {
   local password="$1"
-  mkdir -p "$(dirname "$PANEL_PASSWORD_FILE")"
-  chmod 700 "$(dirname "$PANEL_PASSWORD_FILE")"
-  printf '%s\n' "$password" >"$PANEL_PASSWORD_FILE"
-  chmod 600 "$PANEL_PASSWORD_FILE"
-  printf '[ok] random panel password generated and saved to %s\n' "$PANEL_PASSWORD_FILE" >&2
+  printf '[ok] random panel password generated; it will be shown only once\n' >&2
   printf '[ok] panel login password: %s\n' "$password" >&2
 }
 
@@ -1028,28 +1022,16 @@ docker_menu() {
 
 ${APP_TITLE} one-click installer - Docker mode
 1) Install / first setup
-2) Update / rebuild
-3) Change panel login password
-4) Configure OCI env fallback
-5) Start
-6) Stop
-7) Restart
-8) Status and logs
-9) Backup env and profile data
-10) Uninstall
+2) Update from GitHub latest
+3) Uninstall
+4) Reset panel login password
 MENU
-  read -r -p "Choose an option [1-10]: " choice
+  read -r -p "Choose an option [1-4]: " choice
   case "$choice" in
     1) ACTION="install" ;;
     2) ACTION="update" ;;
-    3) ACTION="change-password" ;;
-    4) ACTION="configure-oci" ;;
-    5) ACTION="start" ;;
-    6) ACTION="stop" ;;
-    7) ACTION="restart" ;;
-    8) ACTION="status" ;;
-    9) ACTION="backup" ;;
-    10) ACTION="uninstall" ;;
+    3) ACTION="uninstall" ;;
+    4) ACTION="change-password" ;;
     *) die "invalid option" ;;
   esac
 }
@@ -1079,28 +1061,16 @@ menu() {
 
 ${APP_TITLE} one-click installer - systemd mode
 1) Install / first setup
-2) Update application
-3) Change panel login password
-4) Configure OCI env fallback
-5) Start services
-6) Stop services
-7) Restart services
-8) Status and logs
-9) Backup local config
-10) Uninstall
+2) Update from GitHub latest
+3) Uninstall
+4) Reset panel login password
 MENU
-  read -r -p "Choose an option [1-10]: " choice
+  read -r -p "Choose an option [1-4]: " choice
   case "$choice" in
     1) ACTION="install" ;;
     2) ACTION="update" ;;
-    3) ACTION="change-password" ;;
-    4) ACTION="configure-oci" ;;
-    5) ACTION="start" ;;
-    6) ACTION="stop" ;;
-    7) ACTION="restart" ;;
-    8) ACTION="status" ;;
-    9) ACTION="backup" ;;
-    10) ACTION="uninstall" ;;
+    3) ACTION="uninstall" ;;
+    4) ACTION="change-password" ;;
     *) die "invalid option" ;;
   esac
 }

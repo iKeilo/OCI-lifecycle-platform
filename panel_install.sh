@@ -12,7 +12,7 @@ usage() {
   cat <<USAGE
 ${APP_NAME} remote one-click installer
 
-Default Docker install:
+Default Docker menu:
   bash <(curl -L https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${BRANCH}/panel_install.sh)
 
 Common commands:
@@ -32,7 +32,6 @@ Environment:
                              Set false to build from source on the server.
   OCI_LIFECYCLE_IMAGE_TAG    GHCR image tag for package mode, default latest.
   PANEL_PASSWORD             Optional non-interactive panel password.
-  PANEL_PASSWORD_FILE        File used when a random panel password is generated.
   WEB_PORT                   Docker default 18080, systemd default 80.
 USAGE
 }
@@ -59,7 +58,6 @@ if [[ "$(id -u)" -ne 0 ]]; then
       OCI_KEY_DIR="${OCI_KEY_DIR:-}" \
       GO_PROXY="${GO_PROXY:-}" \
       PANEL_PASSWORD="${PANEL_PASSWORD:-}" \
-      PANEL_PASSWORD_FILE="${PANEL_PASSWORD_FILE:-}" \
       WEB_PORT="${WEB_PORT:-}" \
       bash -c 'curl -fsSL "$1" | bash -s -- "${@:2}"' bash "$RAW_URL" "$@"
   fi
@@ -98,10 +96,6 @@ fi
 if [[ -z "$project_dir" || ! -f "$project_dir/scripts/install.sh" ]]; then
   printf '[%s] downloaded archive does not contain scripts/install.sh\n' "$APP_NAME" >&2
   exit 1
-fi
-
-if [[ $# -eq 0 ]]; then
-  set -- install
 fi
 
 printf '[%s] running installer from %s\n' "$APP_NAME" "$project_dir"

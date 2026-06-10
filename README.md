@@ -37,11 +37,7 @@ bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/m
 WEB_PORT=18081 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
 ```
 
-安装时会提示输入面板密码；第一次输入直接回车会随机生成密码，并保存到服务器：
-
-```text
-/etc/oci-lifecycle-platform/panel-password.txt
-```
+安装时会提示输入面板密码；第一次输入直接回车会随机生成密码。随机密码只会在终端打印一次，不会保存到服务器文件。
 
 Debian/Ubuntu 服务器：
 

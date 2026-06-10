@@ -63,15 +63,7 @@ WEB_PORT=8088 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecy
 Set panel login password, or press Enter to generate one:
 ```
 
-第一次输入直接回车会随机生成密码，并保存到：
-
-```text
-/etc/oci-lifecycle-platform/panel-password.txt
-```
-
-安装器也会在终端直接打印一次随机密码，便于马上登录面板。后续如果忘记密码，可以在服务器上查看上述文件，或使用 `change-password` 重新设置。
-
-可通过 `PANEL_PASSWORD_FILE` 覆盖保存路径。
+第一次输入直接回车会随机生成密码。安装器会在终端直接打印一次随机密码，便于马上登录面板。随机密码不会保存到服务器文件；后续如果忘记密码，请使用 `change-password` 重新设置。
 
 ## 菜单模式
 
@@ -81,18 +73,12 @@ Set panel login password, or press Enter to generate one:
 sudo bash scripts/install.sh
 ```
 
-菜单包含 10 个选项：
+菜单包含 4 个选项：
 
 1. Install / first setup
-2. Update / rebuild
-3. Change panel password
-4. Configure OCI env fallback
-5. Start
-6. Stop
-7. Restart
-8. Status and logs
-9. Backup env and profile data
-10. Uninstall
+2. Update from GitHub latest
+3. Uninstall
+4. Reset panel login password
 
 ## 非交互安装
 

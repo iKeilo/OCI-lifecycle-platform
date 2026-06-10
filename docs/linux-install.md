@@ -26,7 +26,6 @@ sudo bash scripts/install.sh --systemd install
 /etc/oci-lifecycle-platform/
   panel.env
   profiles.json
-  panel-password.txt
 
 /etc/systemd/system/oci-lifecycle-platform.service
 ```
@@ -56,11 +55,7 @@ USE_NGINX=false WEB_PORT=18080 bash <(curl -L https://raw.githubusercontent.com/
 
 ## 密码
 
-安装时会提示输入面板密码。第一次直接回车会随机生成密码，并保存到：
-
-```bash
-cat /etc/oci-lifecycle-platform/panel-password.txt
-```
+安装时会提示输入面板密码。第一次直接回车会随机生成密码，随机密码只会在终端打印一次，不会保存到服务器文件。
 
 非交互指定密码：
 
