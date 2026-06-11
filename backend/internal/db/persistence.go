@@ -628,6 +628,33 @@ func (s *PostgresSink) GetWebhookSettings() (domain.WebhookSettings, error) {
 	return settings, nil
 }
 
+func (s *PostgresSink) SaveAccountSettings(settings domain.AccountSettings) error {
+	return s.saveSetting("account", settings)
+}
+
+func (s *PostgresSink) GetAccountSettings() (domain.AccountSettings, error) {
+	var settings domain.AccountSettings
+	if err := s.getSetting("account", &settings); err != nil {
+		return domain.AccountSettings{}, err
+	}
+	if settings.PasswordHash != "" {
+		settings.PasswordSet = true
+	}
+	return settings, nil
+}
+
+func (s *PostgresSink) SaveAppearanceSettings(settings domain.AppearanceSettings) error {
+	return s.saveSetting("appearance", settings)
+}
+
+func (s *PostgresSink) GetAppearanceSettings() (domain.AppearanceSettings, error) {
+	var settings domain.AppearanceSettings
+	if err := s.getSetting("appearance", &settings); err != nil {
+		return domain.AppearanceSettings{}, err
+	}
+	return settings, nil
+}
+
 func (s *PostgresSink) saveSetting(key string, value any) error {
 	if s == nil || s.conn == nil {
 		return ErrNotConfigured()

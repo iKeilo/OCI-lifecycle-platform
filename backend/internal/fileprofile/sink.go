@@ -27,8 +27,9 @@ type Sink struct {
 }
 
 type profileStoreFile struct {
-	Version  int                   `json:"version"`
-	Profiles map[string]profileRow `json:"profiles"`
+	Version  int                        `json:"version"`
+	Profiles map[string]profileRow      `json:"profiles"`
+	Settings map[string]json.RawMessage `json:"settings,omitempty"`
 }
 
 type profileRow struct {
@@ -47,6 +48,7 @@ func New(path string) (*Sink, error) {
 		data: profileStoreFile{
 			Version:  1,
 			Profiles: map[string]profileRow{},
+			Settings: map[string]json.RawMessage{},
 		},
 	}
 	if err := s.load(); err != nil {
@@ -164,6 +166,100 @@ func (s *Sink) RecordAudit(domain.AuditLog) error {
 	return nil
 }
 
+func (s *Sink) SaveEmailSettings(settings domain.EmailSettings) error {
+	return s.saveSetting("email", settings)
+}
+
+func (s *Sink) GetEmailSettings() (domain.EmailSettings, error) {
+	var settings domain.EmailSettings
+	if err := s.getSetting("email", &settings); err != nil {
+		return domain.EmailSettings{}, err
+	}
+	if settings.Password != "" {
+		settings.PasswordSet = true
+	}
+	return settings, nil
+}
+
+func (s *Sink) SaveWebhookSettings(settings domain.WebhookSettings) error {
+	return s.saveSetting("webhook", settings)
+}
+
+func (s *Sink) GetWebhookSettings() (domain.WebhookSettings, error) {
+	var settings domain.WebhookSettings
+	if err := s.getSetting("webhook", &settings); err != nil {
+		return domain.WebhookSettings{}, err
+	}
+	if settings.Secret != "" {
+		settings.SecretSet = true
+	}
+	return settings, nil
+}
+
+func (s *Sink) SaveAccountSettings(settings domain.AccountSettings) error {
+	return s.saveSetting("account", settings)
+}
+
+func (s *Sink) GetAccountSettings() (domain.AccountSettings, error) {
+	var settings domain.AccountSettings
+	if err := s.getSetting("account", &settings); err != nil {
+		return domain.AccountSettings{}, err
+	}
+	if settings.PasswordHash != "" {
+		settings.PasswordSet = true
+	}
+	return settings, nil
+}
+
+func (s *Sink) SaveAppearanceSettings(settings domain.AppearanceSettings) error {
+	return s.saveSetting("appearance", settings)
+}
+
+func (s *Sink) GetAppearanceSettings() (domain.AppearanceSettings, error) {
+	var settings domain.AppearanceSettings
+	if err := s.getSetting("appearance", &settings); err != nil {
+		return domain.AppearanceSettings{}, err
+	}
+	return settings, nil
+}
+
+func (s *Sink) saveSetting(key string, value any) error {
+	if s == nil {
+		return store.ErrNotFound
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.data.Settings == nil {
+		s.data.Settings = map[string]json.RawMessage{}
+	}
+	s.data.Settings[key] = raw
+	return s.flushLocked()
+}
+
+func (s *Sink) getSetting(key string, out any) error {
+	if s == nil {
+		return store.ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.data.Settings) == 0 {
+		return nil
+	}
+	raw := s.data.Settings[strings.TrimSpace(key)]
+	if len(raw) == 0 {
+		return nil
+	}
+	return json.Unmarshal(raw, out)
+}
+
 func (s *Sink) load() error {
 	raw, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -183,6 +279,9 @@ func (s *Sink) load() error {
 	}
 	if s.data.Profiles == nil {
 		s.data.Profiles = map[string]profileRow{}
+	}
+	if s.data.Settings == nil {
+		s.data.Settings = map[string]json.RawMessage{}
 	}
 	return nil
 }

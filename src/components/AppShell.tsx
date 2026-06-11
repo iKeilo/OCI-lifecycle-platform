@@ -1,28 +1,51 @@
-import { Bell, ChevronDown, Languages, LogOut, Moon, RefreshCw, Search, Settings2 } from "lucide-react";
+import { Bell, ChevronDown, Languages, LogOut, Moon, RefreshCw, Search, Settings2, Sun } from "lucide-react";
 import { useEffect, useMemo, useState, type PropsWithChildren } from "react";
-import { Link, NavLink } from "react-router-dom";
+import { Link, NavLink, useNavigate } from "react-router-dom";
 import { navGroups, productMark as ProductMark } from "../app/navigation";
-import { getOCIReadiness, listNotifications, listProfiles } from "../services/api";
-import type { OCIReadiness, Profile } from "../services/api";
+import {
+  getAccountSettings,
+  getAppearanceSettings,
+  getOCIReadiness,
+  listNotifications,
+  listProfiles,
+  updateAppearanceSettings
+} from "../services/api";
+import type { AccountSettings, AppearanceSettings, OCIReadiness, Profile } from "../services/api";
 
 type AppShellProps = PropsWithChildren<{
   onLogout?: () => void | Promise<void>;
 }>;
 
 export function AppShell({ children, onLogout }: AppShellProps) {
+  const navigate = useNavigate();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [readiness, setReadiness] = useState<OCIReadiness | null>(null);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [account, setAccount] = useState<AccountSettings | null>(null);
+  const [appearance, setAppearance] = useState<AppearanceSettings>({
+    theme: "light",
+    backgroundMode: "aurora",
+    backgroundImage: ""
+  });
+  const [loggingOut, setLoggingOut] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     async function loadContext() {
       try {
-        const [nextProfiles, nextReadiness, notifications] = await Promise.all([listProfiles(), getOCIReadiness(), listNotifications(true)]);
+        const [nextProfiles, nextReadiness, notifications, nextAccount, nextAppearance] = await Promise.all([
+          listProfiles(),
+          getOCIReadiness(),
+          listNotifications(true),
+          getAccountSettings(),
+          getAppearanceSettings()
+        ]);
         if (!cancelled) {
           setProfiles(nextProfiles);
           setReadiness(nextReadiness);
           setUnreadNotifications(notifications.unreadCount);
+          setAccount(nextAccount);
+          setAppearance(nextAppearance);
         }
       } catch {
         if (!cancelled) {
@@ -36,6 +59,39 @@ export function AppShell({ children, onLogout }: AppShellProps) {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = appearance.theme;
+    document.documentElement.dataset.background = appearance.backgroundMode;
+    if (appearance.backgroundMode === "image" && appearance.backgroundImage) {
+      document.documentElement.style.setProperty("--custom-background-image", `url("${appearance.backgroundImage}")`);
+    } else {
+      document.documentElement.style.removeProperty("--custom-background-image");
+    }
+  }, [appearance]);
+
+  async function toggleTheme() {
+    const next: AppearanceSettings = {
+      ...appearance,
+      theme: appearance.theme === "dark" ? "light" : "dark"
+    };
+    setAppearance(next);
+    try {
+      setAppearance(await updateAppearanceSettings(next));
+    } catch {
+      // Keep the immediate local switch; the settings page can show persistence errors on save.
+    }
+  }
+
+  async function handleLogoutClick() {
+    setLoggingOut(true);
+    try {
+      await onLogout?.();
+      navigate("/", { replace: true });
+    } finally {
+      setLoggingOut(false);
+    }
+  }
 
   const quickStats = useMemo(() => {
     const profile = profiles[0];
@@ -105,23 +161,25 @@ export function AppShell({ children, onLogout }: AppShellProps) {
               <Languages size={18} />
               <span>简体中文</span>
             </button>
-            <button className="icon-button" aria-label="主题">
-              <Moon size={20} />
+            <button className="icon-button" aria-label="主题" title="切换白天/黑夜背景" onClick={() => void toggleTheme()}>
+              {appearance.theme === "dark" ? <Sun size={20} /> : <Moon size={20} />}
             </button>
             <button className="icon-button" aria-label="刷新" onClick={() => window.location.reload()}>
               <RefreshCw size={20} />
             </button>
-            <button className="icon-button" aria-label="设置">
+            <button className="icon-button" aria-label="账号设置" title="账号设置" onClick={() => navigate("/account")}>
               <Settings2 size={20} />
             </button>
             <Link className="icon-button notification-button" aria-label="通知" to="/notifications">
               <Bell size={20} />
               {unreadNotifications > 0 ? <span>{unreadNotifications > 99 ? "99+" : unreadNotifications}</span> : null}
             </Link>
-            <button className="icon-button" aria-label="退出" onClick={() => void onLogout?.()}>
-              <LogOut size={20} />
+            <button className="icon-button" aria-label="退出" title="退出登录" disabled={loggingOut} onClick={() => void handleLogoutClick()}>
+              <LogOut size={20} className={loggingOut ? "spin" : ""} />
             </button>
-            <div className="avatar" aria-label="管理员账号">A</div>
+            <button className="avatar avatar-button" aria-label="账号设置" title="账号设置" onClick={() => navigate("/account")}>
+              {account?.avatar ? <img src={account.avatar} alt="账号头像" /> : account?.avatarInitial || "A"}
+            </button>
           </div>
         </header>
 

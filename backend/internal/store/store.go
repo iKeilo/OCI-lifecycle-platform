@@ -18,23 +18,25 @@ var (
 )
 
 type Store struct {
-	mu              sync.RWMutex
-	now             func() time.Time
-	sink            PersistenceSink
-	nextInst        int
-	nextJob         int
-	nextRule        int
-	nextNotice      int
-	nextAudit       int64
-	profiles        map[string]domain.Profile
-	instances       map[string]domain.Instance
-	templates       map[string]domain.InstanceTemplate
-	jobs            map[string]domain.Job
-	automations     map[string]domain.AutomationRule
-	notifications   map[string]domain.Notification
-	auditLogs       []domain.AuditLog
-	emailSettings   domain.EmailSettings
-	webhookSettings domain.WebhookSettings
+	mu                 sync.RWMutex
+	now                func() time.Time
+	sink               PersistenceSink
+	nextInst           int
+	nextJob            int
+	nextRule           int
+	nextNotice         int
+	nextAudit          int64
+	profiles           map[string]domain.Profile
+	instances          map[string]domain.Instance
+	templates          map[string]domain.InstanceTemplate
+	jobs               map[string]domain.Job
+	automations        map[string]domain.AutomationRule
+	notifications      map[string]domain.Notification
+	auditLogs          []domain.AuditLog
+	emailSettings      domain.EmailSettings
+	webhookSettings    domain.WebhookSettings
+	accountSettings    domain.AccountSettings
+	appearanceSettings domain.AppearanceSettings
 }
 
 type PersistenceSink interface {
@@ -59,11 +61,15 @@ type auditLogReader interface {
 type settingsSink interface {
 	SaveEmailSettings(settings domain.EmailSettings) error
 	SaveWebhookSettings(settings domain.WebhookSettings) error
+	SaveAccountSettings(settings domain.AccountSettings) error
+	SaveAppearanceSettings(settings domain.AppearanceSettings) error
 }
 
 type settingsReader interface {
 	GetEmailSettings() (domain.EmailSettings, error)
 	GetWebhookSettings() (domain.WebhookSettings, error)
+	GetAccountSettings() (domain.AccountSettings, error)
+	GetAppearanceSettings() (domain.AppearanceSettings, error)
 }
 
 func New() *Store {
@@ -80,6 +86,14 @@ func New() *Store {
 		jobs:          map[string]domain.Job{},
 		automations:   map[string]domain.AutomationRule{},
 		notifications: map[string]domain.Notification{},
+		accountSettings: domain.AccountSettings{
+			DisplayName:   "Administrator",
+			AvatarInitial: "A",
+		},
+		appearanceSettings: domain.AppearanceSettings{
+			Theme:          "light",
+			BackgroundMode: "aurora",
+		},
 	}
 }
 
@@ -793,6 +807,108 @@ func (s *Store) SetWebhookSettings(settings domain.WebhookSettings) (domain.Webh
 	return redactWebhookSettings(s.webhookSettings), nil
 }
 
+func (s *Store) GetAccountSettings() domain.AccountSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return redactAccountSettings(normalizeAccountSettings(s.accountSettings))
+}
+
+func (s *Store) GetAccountSettingsForAuth() domain.AccountSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return normalizeAccountSettings(s.accountSettings)
+}
+
+func (s *Store) SetAccountProfile(req domain.AccountProfileRequest) (domain.AccountSettings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	settings := normalizeAccountSettings(s.accountSettings)
+	if strings.TrimSpace(req.DisplayName) != "" {
+		settings.DisplayName = strings.TrimSpace(req.DisplayName)
+	}
+	settings.Email = strings.TrimSpace(req.Email)
+	settings.Avatar = strings.TrimSpace(req.Avatar)
+	settings.AvatarInitial = accountInitial(settings.DisplayName, settings.Email)
+	settings.UpdatedAt = s.now().UTC()
+	s.accountSettings = settings
+	if sink, ok := s.sink.(settingsSink); ok {
+		if err := sink.SaveAccountSettings(s.accountSettings); err != nil {
+			return domain.AccountSettings{}, err
+		}
+	}
+	_ = s.recordAuditLocked(domain.AuditLog{
+		Actor:          "admin",
+		Action:         "account.profile.updated",
+		ResourceType:   "account",
+		ResourceID:     "panel",
+		RequestPayload: map[string]any{"displayName": settings.DisplayName, "email": settings.Email, "avatarSet": settings.Avatar != ""},
+		CreatedAt:      s.now().UTC(),
+	})
+	return redactAccountSettings(s.accountSettings), nil
+}
+
+func (s *Store) SetAccountPasswordHash(hash string) (domain.AccountSettings, error) {
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return domain.AccountSettings{}, fmt.Errorf("%w: password hash is required", ErrValidation)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	settings := normalizeAccountSettings(s.accountSettings)
+	settings.PasswordHash = hash
+	settings.PasswordSet = true
+	settings.UpdatedAt = s.now().UTC()
+	s.accountSettings = settings
+	if sink, ok := s.sink.(settingsSink); ok {
+		if err := sink.SaveAccountSettings(s.accountSettings); err != nil {
+			return domain.AccountSettings{}, err
+		}
+	}
+	_ = s.recordAuditLocked(domain.AuditLog{
+		Actor:        "admin",
+		Action:       "account.password.updated",
+		ResourceType: "account",
+		ResourceID:   "panel",
+		CreatedAt:    s.now().UTC(),
+	})
+	return redactAccountSettings(s.accountSettings), nil
+}
+
+func (s *Store) GetAppearanceSettings() domain.AppearanceSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return normalizeAppearanceSettings(s.appearanceSettings)
+}
+
+func (s *Store) SetAppearanceSettings(settings domain.AppearanceSettings) (domain.AppearanceSettings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	next := normalizeAppearanceSettings(settings)
+	next.UpdatedAt = s.now().UTC()
+	s.appearanceSettings = next
+	if sink, ok := s.sink.(settingsSink); ok {
+		if err := sink.SaveAppearanceSettings(s.appearanceSettings); err != nil {
+			return domain.AppearanceSettings{}, err
+		}
+	}
+	_ = s.recordAuditLocked(domain.AuditLog{
+		Actor:        "admin",
+		Action:       "settings.appearance.updated",
+		ResourceType: "settings",
+		ResourceID:   "appearance",
+		RequestPayload: map[string]any{
+			"theme":          next.Theme,
+			"backgroundMode": next.BackgroundMode,
+			"backgroundSet":  next.BackgroundImage != "",
+		},
+		CreatedAt: s.now().UTC(),
+	})
+	return s.appearanceSettings, nil
+}
+
 func (s *Store) LoadPersistedSettings() error {
 	s.mu.RLock()
 	reader, ok := s.sink.(settingsReader)
@@ -808,12 +924,26 @@ func (s *Store) LoadPersistedSettings() error {
 	if err != nil {
 		return err
 	}
+	accountSettings, err := reader.GetAccountSettings()
+	if err != nil {
+		return err
+	}
+	appearanceSettings, err := reader.GetAppearanceSettings()
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	if emailSettings.Host != "" || emailSettings.Enabled || emailSettings.PasswordSet {
 		s.emailSettings = emailSettings
 	}
 	if webhookSettings.URL != "" || webhookSettings.Enabled || webhookSettings.SecretSet {
 		s.webhookSettings = webhookSettings
+	}
+	if accountSettings.DisplayName != "" || accountSettings.PasswordSet || accountSettings.PasswordHash != "" {
+		s.accountSettings = normalizeAccountSettings(accountSettings)
+	}
+	if appearanceSettings.Theme != "" || appearanceSettings.BackgroundMode != "" || appearanceSettings.BackgroundImage != "" {
+		s.appearanceSettings = normalizeAppearanceSettings(appearanceSettings)
 	}
 	s.mu.Unlock()
 	return nil
@@ -2042,6 +2172,53 @@ func redactWebhookSettings(settings domain.WebhookSettings) domain.WebhookSettin
 	secretSet := settings.SecretSet || strings.TrimSpace(settings.Secret) != ""
 	settings.Secret = ""
 	settings.SecretSet = secretSet
+	return settings
+}
+
+func redactAccountSettings(settings domain.AccountSettings) domain.AccountSettings {
+	settings = normalizeAccountSettings(settings)
+	settings.PasswordHash = ""
+	return settings
+}
+
+func normalizeAccountSettings(settings domain.AccountSettings) domain.AccountSettings {
+	settings.DisplayName = strings.TrimSpace(settings.DisplayName)
+	settings.Email = strings.TrimSpace(settings.Email)
+	settings.Avatar = strings.TrimSpace(settings.Avatar)
+	if settings.DisplayName == "" {
+		settings.DisplayName = "Administrator"
+	}
+	settings.AvatarInitial = accountInitial(settings.DisplayName, settings.Email)
+	settings.PasswordSet = settings.PasswordSet || strings.TrimSpace(settings.PasswordHash) != ""
+	return settings
+}
+
+func accountInitial(name, email string) string {
+	source := strings.TrimSpace(name)
+	if source == "" {
+		source = strings.TrimSpace(email)
+	}
+	if source == "" {
+		return "A"
+	}
+	return strings.ToUpper(string([]rune(source)[0]))
+}
+
+func normalizeAppearanceSettings(settings domain.AppearanceSettings) domain.AppearanceSettings {
+	settings.Theme = strings.ToLower(strings.TrimSpace(settings.Theme))
+	if settings.Theme != "dark" {
+		settings.Theme = "light"
+	}
+	settings.BackgroundMode = strings.ToLower(strings.TrimSpace(settings.BackgroundMode))
+	switch settings.BackgroundMode {
+	case "aurora", "plain", "image":
+	default:
+		settings.BackgroundMode = "aurora"
+	}
+	settings.BackgroundImage = strings.TrimSpace(settings.BackgroundImage)
+	if settings.BackgroundMode != "image" {
+		settings.BackgroundImage = ""
+	}
 	return settings
 }
 

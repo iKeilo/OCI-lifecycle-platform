@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "../components/AppShell";
+import { AccountPage } from "../pages/AccountPage";
 import { AuditPage } from "../pages/AuditPage";
 import { AutomationsPage } from "../pages/AutomationsPage";
 import { CreateInstancePage } from "../pages/CreateInstancePage";
@@ -10,6 +11,7 @@ import { InstancesPage } from "../pages/InstancesPage";
 import { JobsPage } from "../pages/JobsPage";
 import { LoginPage } from "../pages/LoginPage";
 import { MonitoringPage } from "../pages/MonitoringPage";
+import { NetworkPage } from "../pages/NetworkPage";
 import { NotificationsPage } from "../pages/NotificationsPage";
 import { PlaceholderPage } from "../pages/PlaceholderPage";
 import { ProfilesPage } from "../pages/ProfilesPage";
@@ -75,17 +77,18 @@ export function App() {
       {authError ? <div className="inline-error">{authError}</div> : null}
       <Routes>
         <Route path="/" element={<DashboardPage />} />
+        <Route path="/account" element={<AccountPage />} />
         <Route path="/profiles" element={<ProfilesPage />} />
         <Route path="/instances" element={<InstancesPage />} />
         <Route path="/create" element={<CreateInstancePage />} />
         <Route path="/templates" element={<TemplatesPage />} />
         <Route path="/pools" element={<ResourcePoolsPage />} />
+        <Route path="/network" element={<NetworkPage />} />
         <Route path="/automations" element={<AutomationsPage />} />
         <Route path="/jobs" element={<JobsPage />} />
         <Route path="/monitoring" element={<MonitoringPage />} />
         <Route path="/audit" element={<AuditPage />} />
         <Route path="/users" element={<UsersPage />} />
-        <Route path="/object-storage" element={<PlaceholderPage title="对象存储" subtitle="Bucket、对象、策略和生命周期任务将在这里管理。" />} />
         <Route path="/email" element={<EmailPage />} />
         <Route path="/guardrails" element={<PlaceholderPage title="安全护栏" subtitle="自动化、预算、区域和危险操作的全局限制将在这里配置。" />} />
         <Route path="/notifications" element={<NotificationsPage />} />

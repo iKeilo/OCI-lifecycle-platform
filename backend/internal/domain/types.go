@@ -401,3 +401,111 @@ type WebhookTestResult struct {
 	Verified bool   `json:"verified"`
 	Message  string `json:"message"`
 }
+
+type AccountSettings struct {
+	DisplayName   string    `json:"displayName"`
+	Email         string    `json:"email"`
+	Avatar        string    `json:"avatar"`
+	AvatarInitial string    `json:"avatarInitial"`
+	PasswordHash  string    `json:"-"`
+	PasswordSet   bool      `json:"passwordSet"`
+	UpdatedAt     time.Time `json:"updatedAt,omitempty"`
+}
+
+type AccountProfileRequest struct {
+	DisplayName string `json:"displayName"`
+	Email       string `json:"email"`
+	Avatar      string `json:"avatar"`
+}
+
+type AccountPasswordRequest struct {
+	CurrentPassword string `json:"currentPassword"`
+	NewPassword     string `json:"newPassword"`
+}
+
+type AppearanceSettings struct {
+	Theme           string    `json:"theme"`
+	BackgroundMode  string    `json:"backgroundMode"`
+	BackgroundImage string    `json:"backgroundImage"`
+	UpdatedAt       time.Time `json:"updatedAt,omitempty"`
+}
+
+type NetworkInventoryRequest struct {
+	ProfileID     string `json:"profileId"`
+	Region        string `json:"region"`
+	CompartmentID string `json:"compartmentId"`
+	VCNID         string `json:"vcnId"`
+}
+
+type PublicIPResource struct {
+	ID               string    `json:"id"`
+	DisplayName      string    `json:"displayName"`
+	IPAddress        string    `json:"ipAddress"`
+	Lifetime         string    `json:"lifetime"`
+	Scope            string    `json:"scope"`
+	LifecycleState   string    `json:"lifecycleState"`
+	AssignedEntityID string    `json:"assignedEntityId"`
+	CompartmentID    string    `json:"compartmentId"`
+	Region           string    `json:"region"`
+	TimeCreated      time.Time `json:"timeCreated,omitempty"`
+}
+
+type PrivateIPResource struct {
+	ID             string    `json:"id"`
+	DisplayName    string    `json:"displayName"`
+	IPAddress      string    `json:"ipAddress"`
+	HostnameLabel  string    `json:"hostnameLabel"`
+	VNICID         string    `json:"vnicId"`
+	SubnetID       string    `json:"subnetId"`
+	CompartmentID  string    `json:"compartmentId"`
+	LifecycleState string    `json:"lifecycleState"`
+	TimeCreated    time.Time `json:"timeCreated,omitempty"`
+}
+
+type IPv6Resource struct {
+	ID             string    `json:"id"`
+	DisplayName    string    `json:"displayName"`
+	IPAddress      string    `json:"ipAddress"`
+	VNICID         string    `json:"vnicId"`
+	SubnetID       string    `json:"subnetId"`
+	CompartmentID  string    `json:"compartmentId"`
+	LifecycleState string    `json:"lifecycleState"`
+	TimeCreated    time.Time `json:"timeCreated,omitempty"`
+}
+
+type VCNResource struct {
+	ID             string   `json:"id"`
+	DisplayName    string   `json:"displayName"`
+	CIDRBlock      string   `json:"cidrBlock"`
+	IPv6CIDRBlocks []string `json:"ipv6CidrBlocks"`
+	LifecycleState string   `json:"lifecycleState"`
+	CompartmentID  string   `json:"compartmentId"`
+}
+
+type SubnetResource struct {
+	ID             string   `json:"id"`
+	DisplayName    string   `json:"displayName"`
+	VCNID          string   `json:"vcnId"`
+	CIDRBlock      string   `json:"cidrBlock"`
+	IPv6CIDRBlocks []string `json:"ipv6CidrBlocks"`
+	Public         bool     `json:"public"`
+	CompartmentID  string   `json:"compartmentId"`
+	LifecycleState string   `json:"lifecycleState"`
+}
+
+type NetworkInventory struct {
+	Verified      bool                `json:"verified"`
+	ExecutionMode string              `json:"executionMode"`
+	ProfileID     string              `json:"profileId,omitempty"`
+	Region        string              `json:"region,omitempty"`
+	CompartmentID string              `json:"compartmentId,omitempty"`
+	ErrorCode     string              `json:"errorCode,omitempty"`
+	ErrorMessage  string              `json:"errorMessage,omitempty"`
+	RequestIDs    []string            `json:"requestIds,omitempty"`
+	LastSyncedAt  time.Time           `json:"lastSyncedAt,omitempty"`
+	PublicIPs     []PublicIPResource  `json:"publicIps"`
+	PrivateIPs    []PrivateIPResource `json:"privateIps"`
+	IPv6s         []IPv6Resource      `json:"ipv6s"`
+	VCNs          []VCNResource       `json:"vcns"`
+	Subnets       []SubnetResource    `json:"subnets"`
+}

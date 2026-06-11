@@ -7,7 +7,6 @@ import {
   Cloud,
   FileKey,
   Gauge,
-  HardDrive,
   LayoutDashboard,
   Mail,
   Network,
@@ -40,6 +39,7 @@ export const navGroups: NavGroup[] = [
       { label: "创建实例", path: "/create", icon: PlusCircle },
       { label: "模板管理", path: "/templates", icon: Boxes },
       { label: "资源池", path: "/pools", icon: Network },
+      { label: "网络管理", path: "/network", icon: Gauge },
       { label: "自动化规则", path: "/automations", icon: Activity }
     ]
   },
@@ -56,7 +56,6 @@ export const navGroups: NavGroup[] = [
   {
     label: "OCI 服务",
     items: [
-      { label: "对象存储", path: "/object-storage", icon: HardDrive },
       { label: "邮件服务", path: "/email", icon: Mail }
     ]
   },

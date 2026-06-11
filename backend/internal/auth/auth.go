@@ -99,6 +99,18 @@ func (m *Manager) VerifyPassword(password string) bool {
 	return bcrypt.CompareHashAndPassword(m.passwordHash, []byte(password)) == nil
 }
 
+func (m *Manager) SetPasswordHash(hash string) {
+	if m == nil {
+		return
+	}
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return
+	}
+	m.enabled = true
+	m.passwordHash = []byte(hash)
+}
+
 func (m *Manager) IssueSession(w http.ResponseWriter) {
 	if !m.Enabled() {
 		return

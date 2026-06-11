@@ -155,6 +155,9 @@ func main() {
 		slog.Error("panel auth setup failed", "error", err)
 		os.Exit(1)
 	}
+	if persisted := appStore.GetAccountSettingsForAuth(); persisted.PasswordHash != "" {
+		authManager.SetPasswordHash(persisted.PasswordHash)
+	}
 
 	handler := api.NewServerWithOptions(appStore, api.ServerOptions{
 		Enqueue:         runner.Enqueue,

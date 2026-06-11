@@ -83,6 +83,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/auth/me", s.handleAuthMe)
 	s.mux.HandleFunc("POST /api/auth/login", s.handleAuthLogin)
 	s.mux.HandleFunc("POST /api/auth/logout", s.handleAuthLogout)
+	s.mux.HandleFunc("GET /api/account", s.handleAccountSettings)
+	s.mux.HandleFunc("PUT /api/account/profile", s.handleUpdateAccountProfile)
+	s.mux.HandleFunc("POST /api/account/password", s.handleUpdateAccountPassword)
+	s.mux.HandleFunc("GET /api/settings/appearance", s.handleAppearanceSettings)
+	s.mux.HandleFunc("PUT /api/settings/appearance", s.handleUpdateAppearanceSettings)
 	s.mux.HandleFunc("GET /api/oci/readiness", s.handleOCIReadiness)
 	s.mux.HandleFunc("POST /api/oci/validate-readonly", s.handleOCIValidateReadOnly)
 	s.mux.HandleFunc("POST /api/oci/smoke/e2-micro-create-delete", s.handleOCIE2MicroSmoke)
@@ -104,6 +109,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/instances/{id}/actions", s.handleInstanceAction)
 	s.mux.HandleFunc("POST /api/instances/{id}/reboot", s.handleRebootInstance)
 	s.mux.HandleFunc("POST /api/instances/{id}/ip-tasks", s.handleCreateIPTask)
+	s.mux.HandleFunc("GET /api/network/inventory", s.handleNetworkInventory)
 	s.mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	s.mux.HandleFunc("GET /api/jobs/{id}", s.handleJob)
 	s.mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancelJob)
@@ -172,6 +178,71 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authenticated": false,
 	})
+}
+
+func (s *Server) handleAccountSettings(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.store.GetAccountSettings())
+}
+
+func (s *Server) handleUpdateAccountProfile(w http.ResponseWriter, r *http.Request) {
+	var req domain.AccountProfileRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+		return
+	}
+	settings, err := s.store.SetAccountProfile(req)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleUpdateAccountPassword(w http.ResponseWriter, r *http.Request) {
+	if s.auth == nil || !s.auth.Enabled() {
+		writeError(w, http.StatusConflict, "AUTH_DISABLED", "panel authentication is disabled; enable panel auth before changing password")
+		return
+	}
+	var req domain.AccountPasswordRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+		return
+	}
+	if !s.auth.VerifyPassword(req.CurrentPassword) {
+		writeError(w, http.StatusUnauthorized, "INVALID_CURRENT_PASSWORD", "current password is invalid")
+		return
+	}
+	hash, err := auth.HashPassword(req.NewPassword)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_NEW_PASSWORD", err.Error())
+		return
+	}
+	settings, err := s.store.SetAccountPasswordHash(hash)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	s.auth.SetPasswordHash(hash)
+	s.auth.IssueSession(w)
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleAppearanceSettings(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.store.GetAppearanceSettings())
+}
+
+func (s *Server) handleUpdateAppearanceSettings(w http.ResponseWriter, r *http.Request) {
+	var req domain.AppearanceSettings
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+		return
+	}
+	settings, err := s.store.SetAppearanceSettings(req)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
 }
 
 func (s *Server) handleOCIReadiness(w http.ResponseWriter, r *http.Request) {
@@ -412,6 +483,46 @@ func (s *Server) handleLaunchOptions(w http.ResponseWriter, r *http.Request) {
 	result.Profiles = base.Profiles
 	result.Templates = base.Templates
 	normalizeLaunchOptions(&result)
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleNetworkInventory(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	profileID := query.Get("profileId")
+	region := query.Get("region")
+	if s.executionMode != "oci" {
+		writeJSON(w, http.StatusOK, domain.NetworkInventory{
+			Verified:      false,
+			ExecutionMode: s.executionMode,
+			ProfileID:     profileID,
+			Region:        region,
+			CompartmentID: query.Get("compartmentId"),
+			ErrorCode:     "OCI_EXECUTION_MODE_REQUIRED",
+			ErrorMessage:  "network inventory requires OCI execution mode and a valid OCI profile",
+			LastSyncedAt:  time.Now().UTC(),
+		})
+		return
+	}
+	cfg, profile, err := s.resolveOCIConfig(profileID, region)
+	if err != nil {
+		writeJSON(w, http.StatusOK, domain.NetworkInventory{
+			Verified:      false,
+			ExecutionMode: s.executionMode,
+			ProfileID:     profileID,
+			Region:        region,
+			CompartmentID: query.Get("compartmentId"),
+			ErrorCode:     "PROFILE_RESOLVE_FAILED",
+			ErrorMessage:  err.Error(),
+			LastSyncedAt:  time.Now().UTC(),
+		})
+		return
+	}
+	result := oci.DiscoverNetworkInventory(r.Context(), cfg, domain.NetworkInventoryRequest{
+		ProfileID:     profile.ID,
+		Region:        cfg.Region,
+		CompartmentID: query.Get("compartmentId"),
+		VCNID:         query.Get("vcnId"),
+	})
 	writeJSON(w, http.StatusOK, result)
 }
 

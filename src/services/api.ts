@@ -327,6 +327,106 @@ export type WebhookTestResult = {
   message: string;
 };
 
+export type AccountSettings = {
+  displayName: string;
+  email: string;
+  avatar: string;
+  avatarInitial: string;
+  passwordSet: boolean;
+  updatedAt?: string;
+};
+
+export type AccountProfilePayload = {
+  displayName: string;
+  email: string;
+  avatar: string;
+};
+
+export type AccountPasswordPayload = {
+  currentPassword: string;
+  newPassword: string;
+};
+
+export type AppearanceSettings = {
+  theme: "light" | "dark";
+  backgroundMode: "aurora" | "plain" | "image";
+  backgroundImage: string;
+  updatedAt?: string;
+};
+
+export type NetworkInventory = {
+  verified: boolean;
+  executionMode: string;
+  profileId?: string;
+  region?: string;
+  compartmentId?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  requestIds?: string[];
+  lastSyncedAt?: string;
+  publicIps: PublicIPResource[];
+  privateIps: PrivateIPResource[];
+  ipv6s: IPv6Resource[];
+  vcns: VCNResource[];
+  subnets: SubnetResource[];
+};
+
+export type PublicIPResource = {
+  id: string;
+  displayName: string;
+  ipAddress: string;
+  lifetime: string;
+  scope: string;
+  lifecycleState: string;
+  assignedEntityId: string;
+  compartmentId: string;
+  region: string;
+  timeCreated?: string;
+};
+
+export type PrivateIPResource = {
+  id: string;
+  displayName: string;
+  ipAddress: string;
+  hostnameLabel: string;
+  vnicId: string;
+  subnetId: string;
+  compartmentId: string;
+  lifecycleState: string;
+  timeCreated?: string;
+};
+
+export type IPv6Resource = {
+  id: string;
+  displayName: string;
+  ipAddress: string;
+  vnicId: string;
+  subnetId: string;
+  compartmentId: string;
+  lifecycleState: string;
+  timeCreated?: string;
+};
+
+export type VCNResource = {
+  id: string;
+  displayName: string;
+  cidrBlock: string;
+  ipv6CidrBlocks: string[];
+  lifecycleState: string;
+  compartmentId: string;
+};
+
+export type SubnetResource = {
+  id: string;
+  displayName: string;
+  vcnId: string;
+  cidrBlock: string;
+  ipv6CidrBlocks: string[];
+  public: boolean;
+  compartmentId: string;
+  lifecycleState: string;
+};
+
 export type CreateInstanceResponse = {
   instance: Instance;
   job: Job;
@@ -550,6 +650,48 @@ export async function testWebhook(): Promise<WebhookTestResult> {
     method: "POST",
     body: JSON.stringify({})
   });
+}
+
+export async function getAccountSettings(): Promise<AccountSettings> {
+  return request<AccountSettings>("/api/account");
+}
+
+export async function updateAccountProfile(payload: AccountProfilePayload): Promise<AccountSettings> {
+  return request<AccountSettings>("/api/account/profile", {
+    method: "PUT",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function updateAccountPassword(payload: AccountPasswordPayload): Promise<AccountSettings> {
+  return request<AccountSettings>("/api/account/password", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function getAppearanceSettings(): Promise<AppearanceSettings> {
+  return request<AppearanceSettings>("/api/settings/appearance");
+}
+
+export async function updateAppearanceSettings(payload: AppearanceSettings): Promise<AppearanceSettings> {
+  return request<AppearanceSettings>("/api/settings/appearance", {
+    method: "PUT",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function getNetworkInventory(params: {
+  profileId?: string;
+  region?: string;
+  compartmentId?: string;
+  vcnId?: string;
+} = {}): Promise<NetworkInventory> {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value) query.set(key, value);
+  });
+  return request<NetworkInventory>(`/api/network/inventory${query.toString() ? `?${query.toString()}` : ""}`);
 }
 
 export async function listAutomations(): Promise<AutomationRule[]> {
