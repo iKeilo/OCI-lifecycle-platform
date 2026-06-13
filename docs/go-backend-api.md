@@ -149,6 +149,15 @@ OCI 模式真实调用：
 - VirtualNetwork `ListVcns`
 - VirtualNetwork `ListSubnets`
 - VirtualNetwork `ListPublicIps`
+- Blockstorage `ListBootVolumes`，用于创建页启动盘已用量提示。
+
+Shape / Image 联动要求：
+
+- `shape` 查询参数必须传给 Compute `ListImages`，只返回目标 Shape 兼容镜像。
+- Web 创建实例页在 Shape、AD、Compartment 改变时必须重新请求 `/api/launch-options`。
+- 如果当前 `imageId` 不在刷新后的 Image 列表中，前端必须清空或替换为兼容镜像。
+- 手动输入 Image OCID 时必须提示“未验证兼容性”，提交前由后端执行预检查。
+- 刷新失败时返回真实 OCI 错误，不允许用旧 Image 列表继续提交。
 
 Subnet 选项会返回：
 ```json
@@ -428,7 +437,8 @@ go run ./cmd/oci-ipv6-orch-smoke \
 - Template CRUD 未实现。
 - Automation 调度器未实现。
 - Audit 查询已实现；导出未实现。
-- RBAC、审批、预算未实现。
+- RBAC、审批未实现。
+- 预算管理已有 Web 入口和实施文档；BudgetPolicy CRUD、OCI Budgets 同步、Cost Usage 采集、Budget Evaluator、自动降配/删机执行器未实现。
 - Webhook 通知已实现；真实外部 URL 投递待验证。
 - Instance Pool / Autoscaling 未实现。
 

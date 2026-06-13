@@ -4,6 +4,7 @@ import { AppShell } from "../components/AppShell";
 import { AccountPage } from "../pages/AccountPage";
 import { AuditPage } from "../pages/AuditPage";
 import { AutomationsPage } from "../pages/AutomationsPage";
+import { BudgetManagementPage } from "../pages/BudgetManagementPage";
 import { CreateInstancePage } from "../pages/CreateInstancePage";
 import { DashboardPage } from "../pages/DashboardPage";
 import { EmailPage } from "../pages/EmailPage";
@@ -15,9 +16,7 @@ import { NetworkPage } from "../pages/NetworkPage";
 import { NotificationsPage } from "../pages/NotificationsPage";
 import { PlaceholderPage } from "../pages/PlaceholderPage";
 import { ProfilesPage } from "../pages/ProfilesPage";
-import { ResourcePoolsPage } from "../pages/ResourcePoolsPage";
 import { SettingsPage } from "../pages/SettingsPage";
-import { TemplatesPage } from "../pages/TemplatesPage";
 import { UsersPage } from "../pages/UsersPage";
 import { getAuthStatus, logout, type AuthStatus } from "../services/api";
 
@@ -81,11 +80,10 @@ export function App() {
         <Route path="/profiles" element={<ProfilesPage />} />
         <Route path="/instances" element={<InstancesPage />} />
         <Route path="/create" element={<CreateInstancePage />} />
-        <Route path="/templates" element={<TemplatesPage />} />
-        <Route path="/pools" element={<ResourcePoolsPage />} />
         <Route path="/network" element={<NetworkPage />} />
         <Route path="/automations" element={<AutomationsPage />} />
         <Route path="/jobs" element={<JobsPage />} />
+        <Route path="/budgets" element={<BudgetManagementPage />} />
         <Route path="/monitoring" element={<MonitoringPage />} />
         <Route path="/audit" element={<AuditPage />} />
         <Route path="/users" element={<UsersPage />} />

@@ -182,7 +182,7 @@ function AutomationTaskModal({
               <input
                 value={form.targetPool}
                 onChange={(event) => updateField("targetPool", event.target.value)}
-                placeholder="例如：按标签 owner=ops 或真实资源池 ID"
+                placeholder="例如：按标签 owner=ops、实例 OCID 或 Compartment"
               />
             </label>
             <label>
@@ -191,7 +191,6 @@ function AutomationTaskModal({
                 <option value="创建 1 台实例">创建 1 台实例</option>
                 <option value="停止实例">停止实例</option>
                 <option value="重启实例">重启实例</option>
-                <option value="调整资源池目标数量">调整资源池目标数量</option>
                 <option value="仅发送通知">仅发送通知</option>
               </select>
             </label>

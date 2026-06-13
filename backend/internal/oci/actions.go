@@ -13,52 +13,57 @@ import (
 )
 
 type InstanceActionExecutionRequest struct {
-	InstanceID         string
-	Action             domain.InstanceLifecycleAction
-	Graceful           bool
-	PreserveBootVolume bool
-	TargetShape        string
-	TargetOCPUs        int
-	TargetMemoryGB     int
-	TargetBootVolumeGB int
-	ExpandBootVolume   bool
-	JobID              string
+	InstanceID                string
+	Action                    domain.InstanceLifecycleAction
+	Graceful                  bool
+	PreserveBootVolume        bool
+	TargetShape               string
+	TargetOCPUs               int
+	TargetMemoryGB            int
+	TargetBootVolumeGB        int
+	TargetBootVolumeVPUsPerGB int
+	ExpandBootVolume          bool
+	JobID                     string
 }
 
 type InstanceActionExecutionResult struct {
-	Verified            bool      `json:"verified"`
-	ExecutionMode       string    `json:"executionMode"`
-	InstanceID          string    `json:"instanceId"`
-	Action              string    `json:"action"`
-	RequestID           string    `json:"requestId,omitempty"`
-	WorkRequestID       string    `json:"workRequestId,omitempty"`
-	InitialState        string    `json:"initialState,omitempty"`
-	FinalState          string    `json:"finalState,omitempty"`
-	TargetShape         string    `json:"targetShape,omitempty"`
-	TargetOCPUs         int       `json:"targetOcpus,omitempty"`
-	TargetMemoryGB      int       `json:"targetMemoryGb,omitempty"`
-	TargetBootVolumeGB  int       `json:"targetBootVolumeGb,omitempty"`
-	CurrentBootVolumeGB int       `json:"currentBootVolumeGb,omitempty"`
-	BootVolumeID        string    `json:"bootVolumeId,omitempty"`
-	BootVolumeExpanded  bool      `json:"bootVolumeExpanded"`
-	ErrorCode           string    `json:"errorCode,omitempty"`
-	ErrorMessage        string    `json:"errorMessage,omitempty"`
-	ExecutedAt          time.Time `json:"executedAt"`
-	WaitedForState      bool      `json:"waitedForState"`
-	PreserveBootDisk    bool      `json:"preserveBootVolume"`
+	Verified                     bool      `json:"verified"`
+	ExecutionMode                string    `json:"executionMode"`
+	InstanceID                   string    `json:"instanceId"`
+	Action                       string    `json:"action"`
+	RequestID                    string    `json:"requestId,omitempty"`
+	WorkRequestID                string    `json:"workRequestId,omitempty"`
+	InitialState                 string    `json:"initialState,omitempty"`
+	FinalState                   string    `json:"finalState,omitempty"`
+	TargetShape                  string    `json:"targetShape,omitempty"`
+	TargetOCPUs                  int       `json:"targetOcpus,omitempty"`
+	TargetMemoryGB               int       `json:"targetMemoryGb,omitempty"`
+	TargetBootVolumeGB           int       `json:"targetBootVolumeGb,omitempty"`
+	TargetBootVolumeVPUsPerGB    int       `json:"targetBootVolumeVpusPerGb,omitempty"`
+	CurrentBootVolumeGB          int       `json:"currentBootVolumeGb,omitempty"`
+	CurrentBootVolumeVPUsPerGB   int       `json:"currentBootVolumeVpusPerGb,omitempty"`
+	BootVolumeID                 string    `json:"bootVolumeId,omitempty"`
+	BootVolumeExpanded           bool      `json:"bootVolumeExpanded"`
+	BootVolumePerformanceChanged bool      `json:"bootVolumePerformanceChanged"`
+	ErrorCode                    string    `json:"errorCode,omitempty"`
+	ErrorMessage                 string    `json:"errorMessage,omitempty"`
+	ExecutedAt                   time.Time `json:"executedAt"`
+	WaitedForState               bool      `json:"waitedForState"`
+	PreserveBootDisk             bool      `json:"preserveBootVolume"`
 }
 
 func ExecuteInstanceLifecycleAction(ctx context.Context, cfg ReadinessConfig, req InstanceActionExecutionRequest) InstanceActionExecutionResult {
 	result := InstanceActionExecutionResult{
-		ExecutionMode:      cfg.ExecutionMode,
-		InstanceID:         req.InstanceID,
-		Action:             string(req.Action),
-		TargetShape:        req.TargetShape,
-		TargetOCPUs:        req.TargetOCPUs,
-		TargetMemoryGB:     req.TargetMemoryGB,
-		TargetBootVolumeGB: req.TargetBootVolumeGB,
-		ExecutedAt:         time.Now().UTC(),
-		PreserveBootDisk:   req.PreserveBootVolume,
+		ExecutionMode:             cfg.ExecutionMode,
+		InstanceID:                req.InstanceID,
+		Action:                    string(req.Action),
+		TargetShape:               req.TargetShape,
+		TargetOCPUs:               req.TargetOCPUs,
+		TargetMemoryGB:            req.TargetMemoryGB,
+		TargetBootVolumeGB:        req.TargetBootVolumeGB,
+		TargetBootVolumeVPUsPerGB: req.TargetBootVolumeVPUsPerGB,
+		ExecutedAt:                time.Now().UTC(),
+		PreserveBootDisk:          req.PreserveBootVolume,
 	}
 	readiness := CheckReadiness(cfg)
 	if !readiness.Ready {
@@ -152,24 +157,28 @@ func executeResize(ctx context.Context, clients Clients, req InstanceActionExecu
 		result.ErrorMessage = "targetShape is required"
 		return result
 	}
-	if req.TargetOCPUs <= 0 || req.TargetMemoryGB <= 0 {
+	targetIsFlexible := isFlexibleShape(req.TargetShape)
+	if targetIsFlexible && (req.TargetOCPUs <= 0 || req.TargetMemoryGB <= 0) {
 		result.ErrorCode = "OCI_RESIZE_SHAPE_CONFIG_REQUIRED"
-		result.ErrorMessage = "targetOcpus and targetMemoryGb must be greater than zero"
+		result.ErrorMessage = "targetOcpus and targetMemoryGb must be greater than zero for flexible shapes"
 		return result
 	}
 
+	updateDetails := core.UpdateInstanceDetails{
+		Shape:                     common.String(req.TargetShape),
+		UpdateOperationConstraint: core.UpdateInstanceDetailsUpdateOperationConstraintAllowDowntime,
+	}
+	if targetIsFlexible {
+		updateDetails.ShapeConfig = &core.UpdateInstanceShapeConfigDetails{
+			Ocpus:       common.Float32(float32(req.TargetOCPUs)),
+			MemoryInGBs: common.Float32(float32(req.TargetMemoryGB)),
+		}
+	}
 	response, err := clients.Compute.UpdateInstance(ctx, core.UpdateInstanceRequest{
-		InstanceId: common.String(req.InstanceID),
-		UpdateInstanceDetails: core.UpdateInstanceDetails{
-			Shape: common.String(req.TargetShape),
-			ShapeConfig: &core.UpdateInstanceShapeConfigDetails{
-				Ocpus:       common.Float32(float32(req.TargetOCPUs)),
-				MemoryInGBs: common.Float32(float32(req.TargetMemoryGB)),
-			},
-			UpdateOperationConstraint: core.UpdateInstanceDetailsUpdateOperationConstraintAllowDowntime,
-		},
-		OpcRetryToken: retryToken("resize", req.JobID),
-		OpcRequestId:  requestID("codex-resize", req.JobID),
+		InstanceId:            common.String(req.InstanceID),
+		UpdateInstanceDetails: updateDetails,
+		OpcRetryToken:         retryToken("resize", req.JobID),
+		OpcRequestId:          requestID("codex-resize", req.JobID),
 	})
 	if response.OpcRequestId != nil {
 		result.RequestID = *response.OpcRequestId
@@ -186,10 +195,14 @@ func executeResize(ctx context.Context, clients Clients, req InstanceActionExecu
 	if !result.Verified {
 		return result
 	}
-	if req.ExpandBootVolume || req.TargetBootVolumeGB > 0 {
+	if req.ExpandBootVolume || req.TargetBootVolumeVPUsPerGB > 0 {
 		return executeBootVolumeExpansion(ctx, clients, req, result, instance)
 	}
 	return result
+}
+
+func isFlexibleShape(shape string) bool {
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(shape)), ".flex")
 }
 
 func executeBootVolumeExpansion(ctx context.Context, clients Clients, req InstanceActionExecutionRequest, result InstanceActionExecutionResult, instance core.Instance) InstanceActionExecutionResult {
@@ -252,23 +265,49 @@ func executeBootVolumeExpansion(ctx context.Context, clients Clients, req Instan
 	if bootVolume.BootVolume.SizeInGBs != nil {
 		result.CurrentBootVolumeGB = int(*bootVolume.BootVolume.SizeInGBs)
 	}
-	if result.CurrentBootVolumeGB > req.TargetBootVolumeGB {
+	if bootVolume.BootVolume.VpusPerGB != nil {
+		result.CurrentBootVolumeVPUsPerGB = int(*bootVolume.BootVolume.VpusPerGB)
+	}
+	targetBootVolumeGB := req.TargetBootVolumeGB
+	if targetBootVolumeGB <= 0 {
+		targetBootVolumeGB = result.CurrentBootVolumeGB
+	}
+	if result.CurrentBootVolumeGB > targetBootVolumeGB {
 		result.ErrorCode = "OCI_BOOT_VOLUME_CANNOT_SHRINK"
 		result.ErrorMessage = "boot volume expansion cannot decrease disk size"
 		result.Verified = false
 		return result
 	}
-	if result.CurrentBootVolumeGB == req.TargetBootVolumeGB {
+	targetVPUsPerGB := req.TargetBootVolumeVPUsPerGB
+	if targetVPUsPerGB <= 0 {
+		targetVPUsPerGB = result.CurrentBootVolumeVPUsPerGB
+	}
+	if targetVPUsPerGB <= 0 {
+		targetVPUsPerGB = 10
+	}
+	if targetVPUsPerGB < 10 || targetVPUsPerGB > 120 {
+		result.ErrorCode = "OCI_BOOT_VOLUME_VPUS_INVALID"
+		result.ErrorMessage = "boot volume VPUs/GB must be between 10 and 120"
+		result.Verified = false
+		return result
+	}
+	result.TargetBootVolumeVPUsPerGB = targetVPUsPerGB
+	if result.CurrentBootVolumeGB == targetBootVolumeGB && result.CurrentBootVolumeVPUsPerGB == targetVPUsPerGB {
 		result.TargetBootVolumeGB = result.CurrentBootVolumeGB
 		return result
 	}
 
+	updateDetails := core.UpdateBootVolumeDetails{}
+	if result.CurrentBootVolumeGB != targetBootVolumeGB {
+		updateDetails.SizeInGBs = common.Int64(int64(targetBootVolumeGB))
+	}
+	if result.CurrentBootVolumeVPUsPerGB != targetVPUsPerGB {
+		updateDetails.VpusPerGB = common.Int64(int64(targetVPUsPerGB))
+	}
 	update, err := clients.Blockstorage.UpdateBootVolume(ctx, core.UpdateBootVolumeRequest{
-		BootVolumeId: common.String(bootVolumeID),
-		UpdateBootVolumeDetails: core.UpdateBootVolumeDetails{
-			SizeInGBs: common.Int64(int64(req.TargetBootVolumeGB)),
-		},
-		OpcRequestId: requestID("codex-expand-boot-volume", req.JobID),
+		BootVolumeId:            common.String(bootVolumeID),
+		UpdateBootVolumeDetails: updateDetails,
+		OpcRequestId:            requestID("codex-expand-boot-volume", req.JobID),
 	})
 	appendFirstRequestID(&result.RequestID, update.OpcRequestId)
 	if err != nil {
@@ -277,10 +316,11 @@ func executeBootVolumeExpansion(ctx context.Context, clients Clients, req Instan
 		result.Verified = false
 		return result
 	}
-	result.BootVolumeExpanded = true
-	result.TargetBootVolumeGB = req.TargetBootVolumeGB
+	result.BootVolumeExpanded = targetBootVolumeGB > result.CurrentBootVolumeGB
+	result.BootVolumePerformanceChanged = result.CurrentBootVolumeVPUsPerGB != targetVPUsPerGB
+	result.TargetBootVolumeGB = targetBootVolumeGB
 
-	if err := waitBootVolumeSize(ctx, clients, bootVolumeID, req.TargetBootVolumeGB, 10*time.Minute); err != nil {
+	if err := waitBootVolumeTarget(ctx, clients, bootVolumeID, targetBootVolumeGB, targetVPUsPerGB, 10*time.Minute); err != nil {
 		result.ErrorCode = "OCI_WAIT_BOOT_VOLUME_SIZE_FAILED"
 		result.ErrorMessage = err.Error()
 		result.Verified = false
@@ -290,6 +330,10 @@ func executeBootVolumeExpansion(ctx context.Context, clients Clients, req Instan
 }
 
 func waitBootVolumeSize(ctx context.Context, clients Clients, bootVolumeID string, targetGB int, timeout time.Duration) error {
+	return waitBootVolumeTarget(ctx, clients, bootVolumeID, targetGB, 0, timeout)
+}
+
+func waitBootVolumeTarget(ctx context.Context, clients Clients, bootVolumeID string, targetGB int, targetVPUsPerGB int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		response, err := clients.Blockstorage.GetBootVolume(ctx, core.GetBootVolumeRequest{BootVolumeId: common.String(bootVolumeID)})
@@ -300,11 +344,16 @@ func waitBootVolumeSize(ctx context.Context, clients Clients, bootVolumeID strin
 		if response.BootVolume.SizeInGBs != nil {
 			currentGB = int(*response.BootVolume.SizeInGBs)
 		}
-		if currentGB >= targetGB && response.BootVolume.LifecycleState == core.BootVolumeLifecycleStateAvailable {
+		currentVPUsPerGB := 0
+		if response.BootVolume.VpusPerGB != nil {
+			currentVPUsPerGB = int(*response.BootVolume.VpusPerGB)
+		}
+		vpusReady := targetVPUsPerGB <= 0 || currentVPUsPerGB == targetVPUsPerGB
+		if currentGB >= targetGB && vpusReady && response.BootVolume.LifecycleState == core.BootVolumeLifecycleStateAvailable {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("boot volume %s did not reach %d GB before timeout; current size is %d GB", bootVolumeID, targetGB, currentGB)
+			return fmt.Errorf("boot volume %s did not reach %d GB / %d VPUs per GB before timeout; current size is %d GB / %d VPUs per GB", bootVolumeID, targetGB, targetVPUsPerGB, currentGB, currentVPUsPerGB)
 		}
 		select {
 		case <-ctx.Done():

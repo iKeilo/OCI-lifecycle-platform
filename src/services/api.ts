@@ -51,9 +51,13 @@ export type Instance = {
   compartment: string;
   primaryIp: string;
   privateIp: string;
+  primaryIpv6: string;
+  ipv6Addresses: string[];
+  ipv6Enabled: boolean;
   ocpus: number;
   memoryGb: number;
   bootVolumeGb: number;
+  bootVolumeVpusPerGb: number;
   status: "Running" | "Stopped" | "Provisioning" | "Terminating" | "Terminated";
   protected: boolean;
   ociInstanceId: string;
@@ -102,6 +106,19 @@ export type ShapeOption = {
   maxMemoryGb: number;
 };
 
+export type BootVolumeUsage = {
+  verified: boolean;
+  region?: string;
+  totalGb: number;
+  bootVolumeCount: number;
+  compartmentCount: number;
+  availabilityDomainCount: number;
+  requestIds?: string[];
+  errorCode?: string;
+  errorMessage?: string;
+  lastSyncedAt?: string;
+};
+
 export type LaunchOptions = {
   verified?: boolean;
   profileId?: string;
@@ -121,6 +138,7 @@ export type LaunchOptions = {
   vcns: LaunchOption[];
   subnets: LaunchOption[];
   reservedIps: LaunchOption[];
+  bootVolumeUsage: BootVolumeUsage;
 };
 
 export type OCIReadiness = {
@@ -206,6 +224,7 @@ export type IPTaskPayload = {
   vnicId: string;
   note: string;
   enableIpv6: boolean;
+  disableIpv6?: boolean;
   autoConfigureIpv6: boolean;
   ipv6Strategy: "assign_only" | "additive" | "clone_route_table" | "replace_public_path";
   networkChangeMode: "assign_only" | "additive" | "clone_route_table" | "replace_public_path";
@@ -243,12 +262,12 @@ export type CreateInstancePayload = {
   compartment: string;
   compartmentId: string;
   availabilityAd: string;
-  templateId: string;
   imageId: string;
   shape: string;
   ocpus: number;
   memoryGb: number;
   bootVolumeGb: number;
+  bootVolumeVpusPerGb: number;
   assignPublicIp: boolean;
   enableIpv6: boolean;
   reservedPublicIp: string;
@@ -351,6 +370,28 @@ export type AppearanceSettings = {
   theme: "light" | "dark";
   backgroundMode: "aurora" | "plain" | "image";
   backgroundImage: string;
+  language: "zh-CN" | "en-US";
+  updatedAt?: string;
+};
+
+export type BudgetSettings = {
+  enabled: boolean;
+  monthlyBudgetUsd: number;
+  actualSpendUsd: number;
+  forecastSpendUsd: number;
+  thresholdPercent: number;
+  scopeMode: "tag" | "compartment" | "manual";
+  profileId: string;
+  region: string;
+  compartmentId: string;
+  resourcePool: string;
+  tagKey: string;
+  tagValue: string;
+  manualInstanceIds: string[];
+  actionMode: "notify" | "downgrade" | "delete";
+  downgradePreset: string;
+  deleteBootVolume: boolean;
+  requireApproval: boolean;
   updatedAt?: string;
 };
 
@@ -382,6 +423,17 @@ export type PublicIPResource = {
   compartmentId: string;
   region: string;
   timeCreated?: string;
+};
+
+export type PublicIPBatchTaskPayload = {
+  action: "create" | "delete";
+  profileId?: string;
+  region?: string;
+  compartmentId?: string;
+  count?: number;
+  displayPrefix?: string;
+  publicIpIds?: string[];
+  note?: string;
 };
 
 export type PrivateIPResource = {
@@ -454,6 +506,7 @@ export type InstanceActionPayload = {
   targetOcpus: number;
   targetMemoryGb: number;
   targetBootVolumeGb: number;
+  targetBootVolumeVpusPerGb: number;
   expandBootVolume: boolean;
   snapshotBefore: boolean;
   note: string;
@@ -478,11 +531,6 @@ export async function createInstanceTask(payload: CreateInstancePayload): Promis
     method: "POST",
     body: JSON.stringify(payload)
   });
-}
-
-export async function listTemplates(): Promise<InstanceTemplate[]> {
-  const response = await request<ListResponse<InstanceTemplate>>("/api/templates");
-  return response.items;
 }
 
 export async function getLaunchOptions(): Promise<LaunchOptions> {
@@ -681,6 +729,17 @@ export async function updateAppearanceSettings(payload: AppearanceSettings): Pro
   });
 }
 
+export async function getBudgetSettings(): Promise<BudgetSettings> {
+  return request<BudgetSettings>("/api/budget/settings");
+}
+
+export async function updateBudgetSettings(payload: BudgetSettings): Promise<BudgetSettings> {
+  return request<BudgetSettings>("/api/budget/settings", {
+    method: "PUT",
+    body: JSON.stringify(payload)
+  });
+}
+
 export async function getNetworkInventory(params: {
   profileId?: string;
   region?: string;
@@ -692,6 +751,13 @@ export async function getNetworkInventory(params: {
     if (value) query.set(key, value);
   });
   return request<NetworkInventory>(`/api/network/inventory${query.toString() ? `?${query.toString()}` : ""}`);
+}
+
+export async function createPublicIPBatchTask(payload: PublicIPBatchTaskPayload): Promise<Job> {
+  return request<Job>("/api/network/public-ips/batch", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
 }
 
 export async function listAutomations(): Promise<AutomationRule[]> {

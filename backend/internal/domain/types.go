@@ -45,24 +45,28 @@ const (
 )
 
 type Instance struct {
-	ID             string         `json:"id"`
-	Name           string         `json:"name"`
-	Created        string         `json:"created"`
-	Shape          string         `json:"shape"`
-	Region         string         `json:"region"`
-	Compartment    string         `json:"compartment"`
-	PrimaryIP      string         `json:"primaryIp"`
-	PrivateIP      string         `json:"privateIp"`
-	OCPUs          int            `json:"ocpus"`
-	MemoryGB       int            `json:"memoryGb"`
-	BootVolumeGB   int            `json:"bootVolumeGb"`
-	Status         InstanceStatus `json:"status"`
-	Protected      bool           `json:"protected"`
-	OCIInstanceID  string         `json:"ociInstanceId"`
-	ProfileID      string         `json:"profileId"`
-	CompartmentID  string         `json:"compartmentId"`
-	LastSyncedAt   time.Time      `json:"lastSyncedAt"`
-	ReservedIPName string         `json:"reservedIpName,omitempty"`
+	ID                  string         `json:"id"`
+	Name                string         `json:"name"`
+	Created             string         `json:"created"`
+	Shape               string         `json:"shape"`
+	Region              string         `json:"region"`
+	Compartment         string         `json:"compartment"`
+	PrimaryIP           string         `json:"primaryIp"`
+	PrivateIP           string         `json:"privateIp"`
+	PrimaryIPv6         string         `json:"primaryIpv6"`
+	IPv6Addresses       []string       `json:"ipv6Addresses"`
+	IPv6Enabled         bool           `json:"ipv6Enabled"`
+	OCPUs               int            `json:"ocpus"`
+	MemoryGB            int            `json:"memoryGb"`
+	BootVolumeGB        int            `json:"bootVolumeGb"`
+	BootVolumeVPUsPerGB int            `json:"bootVolumeVpusPerGb"`
+	Status              InstanceStatus `json:"status"`
+	Protected           bool           `json:"protected"`
+	OCIInstanceID       string         `json:"ociInstanceId"`
+	ProfileID           string         `json:"profileId"`
+	CompartmentID       string         `json:"compartmentId"`
+	LastSyncedAt        time.Time      `json:"lastSyncedAt"`
+	ReservedIPName      string         `json:"reservedIpName,omitempty"`
 }
 
 type JobStatus string
@@ -132,25 +136,26 @@ type AuditLogFilter struct {
 }
 
 type InstanceTemplate struct {
-	ID             string            `json:"id"`
-	Name           string            `json:"name"`
-	Version        string            `json:"version"`
-	ProfileID      string            `json:"profileId"`
-	Region         string            `json:"region"`
-	Compartment    string            `json:"compartment"`
-	ImageID        string            `json:"imageId"`
-	ImageName      string            `json:"imageName"`
-	Shape          string            `json:"shape"`
-	OCPUs          int               `json:"ocpus"`
-	MemoryGB       int               `json:"memoryGb"`
-	BootVolumeGB   int               `json:"bootVolumeGb"`
-	VCNID          string            `json:"vcnId"`
-	SubnetID       string            `json:"subnetId"`
-	AssignPublicIP bool              `json:"assignPublicIp"`
-	Tags           map[string]string `json:"tags"`
-	Status         string            `json:"status"`
-	CreatedBy      string            `json:"createdBy"`
-	CreatedAt      time.Time         `json:"createdAt"`
+	ID                  string            `json:"id"`
+	Name                string            `json:"name"`
+	Version             string            `json:"version"`
+	ProfileID           string            `json:"profileId"`
+	Region              string            `json:"region"`
+	Compartment         string            `json:"compartment"`
+	ImageID             string            `json:"imageId"`
+	ImageName           string            `json:"imageName"`
+	Shape               string            `json:"shape"`
+	OCPUs               int               `json:"ocpus"`
+	MemoryGB            int               `json:"memoryGb"`
+	BootVolumeGB        int               `json:"bootVolumeGb"`
+	BootVolumeVPUsPerGB int               `json:"bootVolumeVpusPerGb"`
+	VCNID               string            `json:"vcnId"`
+	SubnetID            string            `json:"subnetId"`
+	AssignPublicIP      bool              `json:"assignPublicIp"`
+	Tags                map[string]string `json:"tags"`
+	Status              string            `json:"status"`
+	CreatedBy           string            `json:"createdBy"`
+	CreatedAt           time.Time         `json:"createdAt"`
 }
 
 type LaunchOption struct {
@@ -169,6 +174,19 @@ type ShapeOption struct {
 	MaxOCPUs    int    `json:"maxOcpus"`
 	MinMemoryGB int    `json:"minMemoryGb"`
 	MaxMemoryGB int    `json:"maxMemoryGb"`
+}
+
+type BootVolumeUsage struct {
+	Verified                bool      `json:"verified"`
+	Region                  string    `json:"region,omitempty"`
+	TotalGB                 int       `json:"totalGb"`
+	BootVolumeCount         int       `json:"bootVolumeCount"`
+	CompartmentCount        int       `json:"compartmentCount"`
+	AvailabilityDomainCount int       `json:"availabilityDomainCount"`
+	RequestIDs              []string  `json:"requestIds,omitempty"`
+	ErrorCode               string    `json:"errorCode,omitempty"`
+	ErrorMessage            string    `json:"errorMessage,omitempty"`
+	LastSyncedAt            time.Time `json:"lastSyncedAt,omitempty"`
 }
 
 type LaunchOptions struct {
@@ -190,6 +208,7 @@ type LaunchOptions struct {
 	VCNs            []LaunchOption     `json:"vcns"`
 	Subnets         []LaunchOption     `json:"subnets"`
 	ReservedIPs     []LaunchOption     `json:"reservedIps"`
+	BootVolumeUsage BootVolumeUsage    `json:"bootVolumeUsage"`
 }
 
 type InstanceLifecycleAction string
@@ -203,16 +222,17 @@ const (
 )
 
 type InstanceActionRequest struct {
-	Action             InstanceLifecycleAction `json:"action"`
-	Graceful           bool                    `json:"graceful"`
-	PreserveBootVolume bool                    `json:"preserveBootVolume"`
-	TargetShape        string                  `json:"targetShape"`
-	TargetOCPUs        int                     `json:"targetOcpus"`
-	TargetMemoryGB     int                     `json:"targetMemoryGb"`
-	TargetBootVolumeGB int                     `json:"targetBootVolumeGb"`
-	ExpandBootVolume   bool                    `json:"expandBootVolume"`
-	SnapshotBefore     bool                    `json:"snapshotBefore"`
-	Note               string                  `json:"note"`
+	Action                    InstanceLifecycleAction `json:"action"`
+	Graceful                  bool                    `json:"graceful"`
+	PreserveBootVolume        bool                    `json:"preserveBootVolume"`
+	TargetShape               string                  `json:"targetShape"`
+	TargetOCPUs               int                     `json:"targetOcpus"`
+	TargetMemoryGB            int                     `json:"targetMemoryGb"`
+	TargetBootVolumeGB        int                     `json:"targetBootVolumeGb"`
+	TargetBootVolumeVPUsPerGB int                     `json:"targetBootVolumeVpusPerGb"`
+	ExpandBootVolume          bool                    `json:"expandBootVolume"`
+	SnapshotBefore            bool                    `json:"snapshotBefore"`
+	Note                      string                  `json:"note"`
 }
 
 type AutomationRule struct {
@@ -244,6 +264,7 @@ type IPTaskRequest struct {
 	VNICID                   string `json:"vnicId"`
 	Note                     string `json:"note"`
 	EnableIPv6               bool   `json:"enableIpv6"`
+	DisableIPv6              bool   `json:"disableIpv6"`
 	AutoConfigureIPv6        bool   `json:"autoConfigureIpv6"`
 	IPv6Strategy             string `json:"ipv6Strategy"`
 	NetworkChangeMode        string `json:"networkChangeMode"`
@@ -275,6 +296,7 @@ type CreateInstanceRequest struct {
 	OCPUs                int               `json:"ocpus"`
 	MemoryGB             int               `json:"memoryGb"`
 	BootVolumeGB         int               `json:"bootVolumeGb"`
+	BootVolumeVPUsPerGB  int               `json:"bootVolumeVpusPerGb"`
 	AssignPublicIP       bool              `json:"assignPublicIp"`
 	EnableIPv6           bool              `json:"enableIpv6"`
 	ReservedPublicIP     string            `json:"reservedPublicIp"`
@@ -427,7 +449,29 @@ type AppearanceSettings struct {
 	Theme           string    `json:"theme"`
 	BackgroundMode  string    `json:"backgroundMode"`
 	BackgroundImage string    `json:"backgroundImage"`
+	Language        string    `json:"language"`
 	UpdatedAt       time.Time `json:"updatedAt,omitempty"`
+}
+
+type BudgetSettings struct {
+	Enabled           bool      `json:"enabled"`
+	MonthlyBudgetUSD  float64   `json:"monthlyBudgetUsd"`
+	ActualSpendUSD    float64   `json:"actualSpendUsd"`
+	ForecastSpendUSD  float64   `json:"forecastSpendUsd"`
+	ThresholdPercent  float64   `json:"thresholdPercent"`
+	ScopeMode         string    `json:"scopeMode"`
+	ProfileID         string    `json:"profileId"`
+	Region            string    `json:"region"`
+	CompartmentID     string    `json:"compartmentId"`
+	ResourcePool      string    `json:"resourcePool"`
+	TagKey            string    `json:"tagKey"`
+	TagValue          string    `json:"tagValue"`
+	ManualInstanceIDs []string  `json:"manualInstanceIds"`
+	ActionMode        string    `json:"actionMode"`
+	DowngradePreset   string    `json:"downgradePreset"`
+	DeleteBootVolume  bool      `json:"deleteBootVolume"`
+	RequireApproval   bool      `json:"requireApproval"`
+	UpdatedAt         time.Time `json:"updatedAt,omitempty"`
 }
 
 type NetworkInventoryRequest struct {
@@ -448,6 +492,17 @@ type PublicIPResource struct {
 	CompartmentID    string    `json:"compartmentId"`
 	Region           string    `json:"region"`
 	TimeCreated      time.Time `json:"timeCreated,omitempty"`
+}
+
+type PublicIPBatchTaskRequest struct {
+	Action        string   `json:"action"`
+	ProfileID     string   `json:"profileId"`
+	Region        string   `json:"region"`
+	CompartmentID string   `json:"compartmentId"`
+	Count         int      `json:"count"`
+	DisplayPrefix string   `json:"displayPrefix"`
+	PublicIPIDs   []string `json:"publicIpIds"`
+	Note          string   `json:"note"`
 }
 
 type PrivateIPResource struct {

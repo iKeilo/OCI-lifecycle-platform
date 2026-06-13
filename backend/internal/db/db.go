@@ -105,9 +105,12 @@ CREATE TABLE IF NOT EXISTS instances (
   compartment_id TEXT NOT NULL,
   primary_ip TEXT NOT NULL DEFAULT '',
   private_ip TEXT NOT NULL DEFAULT '',
+  primary_ipv6 TEXT NOT NULL DEFAULT '',
+  ipv6_addresses JSONB NOT NULL DEFAULT '[]'::jsonb,
   ocpus INTEGER NOT NULL DEFAULT 0,
   memory_gb INTEGER NOT NULL DEFAULT 0,
   boot_volume_gb INTEGER NOT NULL DEFAULT 0,
+  boot_volume_vpus_per_gb INTEGER NOT NULL DEFAULT 10,
   status TEXT NOT NULL,
   protected BOOLEAN NOT NULL DEFAULT false,
   reserved_ip_name TEXT,
@@ -211,6 +214,10 @@ CREATE TABLE IF NOT EXISTS app_settings (
 CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_instances_status ON instances(status);
+
+ALTER TABLE instances ADD COLUMN IF NOT EXISTS primary_ipv6 TEXT NOT NULL DEFAULT '';
+ALTER TABLE instances ADD COLUMN IF NOT EXISTS ipv6_addresses JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE instances ADD COLUMN IF NOT EXISTS boot_volume_vpus_per_gb INTEGER NOT NULL DEFAULT 10;
 `
 
 const seedMigrationSQL = `

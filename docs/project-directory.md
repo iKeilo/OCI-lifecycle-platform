@@ -54,6 +54,7 @@
 | `src/pages/NotificationsPage.tsx` | 站内通知列表。 |
 | `src/pages/EmailPage.tsx` | 通知通道配置，包含 SMTP 和 Webhook。 |
 | `src/pages/AuditPage.tsx` | 审计日志查询、筛选、详情。 |
+| `src/pages/BudgetManagementPage.tsx` | 预算管理入口，展示预算策略、预算熔断、自动降配/删机护栏；当前执行器待后端接入。 |
 | `src/pages/AutomationsPage.tsx` | 自动化策略入口，目前仍需补齐 scheduler 与真实执行链路。 |
 | `src/pages/ResourcePoolsPage.tsx` | Instance Pool/Autoscaling 入口，目前仍需补齐真实 executor。 |
 | `src/pages/SettingsPage.tsx` | 平台设置入口。 |
@@ -74,6 +75,7 @@
 | `docs/docker-install.md` | Docker 版部署说明。 |
 | `docs/linux-install.md` | 原生 Linux/systemd 部署说明。 |
 | `docs/github-release-packages.md` | GitHub Releases 与 GHCR Packages 发布说明。 |
+| `docs/budget-management-implementation.md` | 预算管理、预算熔断、超预算降配/删机的实施方案。 |
 
 ## 部署入口
 
@@ -138,7 +140,8 @@ npm run build
 | PostgreSQL 重启恢复 | 已有持久化基础，仍需做完整重启恢复专项验证。 |
 | Webhook 真实投递 | API 与配置已落地，当前只验证了禁用时返回 502；真实上游投递待验证。 |
 | Instance Pool / Autoscaling | UI 入口存在，真实 OCI executor 待落地。 |
-| RBAC / 审批 / 预算护栏 | 页面入口和部分模型存在，真实权限与审批流待落地。 |
+| RBAC / 审批 | 页面入口和部分模型存在，真实权限与审批流待落地。 |
+| 预算管理 / 预算熔断 | 已新增前端入口和实施文档；BudgetPolicy CRUD、OCI Budgets 同步、Cost Usage 采集、自动降配/删机执行器待落地。 |
 | Template CRUD | 页面入口存在，真实模板版本化与创建实例绑定待补齐。 |
 | 自动化 scheduler | 策略页面存在，真实周期触发、冷却和执行链路待补齐。 |
 | 审计导出 | 查询已落地，导出能力待补齐。 |

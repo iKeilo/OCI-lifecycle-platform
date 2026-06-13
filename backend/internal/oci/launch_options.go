@@ -62,6 +62,7 @@ func DiscoverLaunchOptions(ctx context.Context, cfg ReadinessConfig, req LaunchO
 		result.ErrorMessage = err.Error()
 		return result
 	}
+	discoverBootVolumeUsage(ctx, clients, &result)
 	if err := discoverShapes(ctx, clients, req, &result); err != nil {
 		result.ErrorCode = "OCI_LIST_SHAPES_FAILED"
 		result.ErrorMessage = err.Error()
@@ -191,9 +192,6 @@ func discoverShapes(ctx context.Context, clients Clients, req LaunchOptionsReque
 		}
 		if strings.TrimSpace(req.AvailabilityDomain) != "" {
 			listReq.AvailabilityDomain = common.String(req.AvailabilityDomain)
-		}
-		if strings.TrimSpace(req.Shape) != "" {
-			listReq.Shape = common.String(req.Shape)
 		}
 		if page != "" {
 			listReq.Page = common.String(page)
@@ -347,6 +345,81 @@ func discoverReservedPublicIPs(ctx context.Context, clients Clients, result *dom
 	}
 	sortLaunchOptions(result.ReservedIPs)
 	return nil
+}
+
+func discoverBootVolumeUsage(ctx context.Context, clients Clients, result *domain.LaunchOptions) {
+	usage := domain.BootVolumeUsage{
+		Region:       result.Region,
+		LastSyncedAt: time.Now().UTC(),
+	}
+	compartmentIDs := uniqueLaunchOptionIDs(result.Compartments)
+	if len(compartmentIDs) == 0 && strings.TrimSpace(result.CompartmentID) != "" {
+		compartmentIDs = append(compartmentIDs, result.CompartmentID)
+	}
+	availabilityDomains := uniqueLaunchOptionIDs(result.AvailabilityADs)
+	usage.CompartmentCount = len(compartmentIDs)
+	usage.AvailabilityDomainCount = len(availabilityDomains)
+
+	if len(compartmentIDs) == 0 || len(availabilityDomains) == 0 {
+		usage.ErrorCode = "OCI_BOOT_VOLUME_SCOPE_EMPTY"
+		usage.ErrorMessage = "boot volume usage requires at least one compartment and availability domain"
+		result.BootVolumeUsage = usage
+		return
+	}
+
+	for _, compartmentID := range compartmentIDs {
+		for _, availabilityDomain := range availabilityDomains {
+			page := ""
+			for {
+				req := core.ListBootVolumesRequest{
+					AvailabilityDomain: common.String(availabilityDomain),
+					CompartmentId:      common.String(compartmentID),
+					Limit:              common.Int(100),
+				}
+				if page != "" {
+					req.Page = common.String(page)
+				}
+				resp, err := clients.Blockstorage.ListBootVolumes(ctx, req)
+				appendRequestID(&usage.RequestIDs, resp.OpcRequestId)
+				appendRequestID(&result.RequestIDs, resp.OpcRequestId)
+				if err != nil {
+					usage.ErrorCode = "OCI_LIST_BOOT_VOLUMES_FAILED"
+					usage.ErrorMessage = err.Error()
+					result.BootVolumeUsage = usage
+					return
+				}
+				for _, item := range resp.Items {
+					if item.LifecycleState == core.BootVolumeLifecycleStateTerminated || item.LifecycleState == core.BootVolumeLifecycleStateTerminating {
+						continue
+					}
+					if item.SizeInGBs != nil {
+						usage.TotalGB += int(*item.SizeInGBs)
+					}
+					usage.BootVolumeCount++
+				}
+				if resp.OpcNextPage == nil || *resp.OpcNextPage == "" {
+					break
+				}
+				page = *resp.OpcNextPage
+			}
+		}
+	}
+	usage.Verified = true
+	result.BootVolumeUsage = usage
+}
+
+func uniqueLaunchOptionIDs(options []domain.LaunchOption) []string {
+	seen := map[string]bool{}
+	values := make([]string, 0, len(options))
+	for _, option := range options {
+		id := strings.TrimSpace(option.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		values = append(values, id)
+	}
+	return values
 }
 
 func mapShapeOption(item core.Shape) domain.ShapeOption {

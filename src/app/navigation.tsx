@@ -1,15 +1,14 @@
 import {
   Activity,
   Bell,
-  Boxes,
   ChartNoAxesCombined,
   ClipboardCheck,
   Cloud,
+  DollarSign,
   FileKey,
   Gauge,
   LayoutDashboard,
   Mail,
-  Network,
   PlusCircle,
   ScrollText,
   Server,
@@ -37,8 +36,6 @@ export const navGroups: NavGroup[] = [
       { label: "概览", path: "/", icon: LayoutDashboard },
       { label: "实例管理", path: "/instances", icon: Server },
       { label: "创建实例", path: "/create", icon: PlusCircle },
-      { label: "模板管理", path: "/templates", icon: Boxes },
-      { label: "资源池", path: "/pools", icon: Network },
       { label: "网络管理", path: "/network", icon: Gauge },
       { label: "自动化规则", path: "/automations", icon: Activity }
     ]
@@ -48,6 +45,7 @@ export const navGroups: NavGroup[] = [
     items: [
       { label: "账号与密钥", path: "/profiles", icon: FileKey },
       { label: "任务中心", path: "/jobs", icon: ClipboardCheck },
+      { label: "预算管理", path: "/budgets", icon: DollarSign },
       { label: "监控告警", path: "/monitoring", icon: ChartNoAxesCombined },
       { label: "审计日志", path: "/audit", icon: ScrollText },
       { label: "用户与权限", path: "/users", icon: Users }

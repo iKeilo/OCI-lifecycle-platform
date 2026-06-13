@@ -82,11 +82,53 @@ func (e *OCIExecutor) Execute(ctx context.Context, jobID string) error {
 		}
 		return e.executeInstanceJob(ctx, cfg, job)
 	}
+	if job.ResourceType == "network" {
+		if operation, _ := job.Input["operation"].(string); operation == "public-ip-batch" {
+			return e.executePublicIPBatchJob(ctx, cfg, job)
+		}
+	}
 
 	if _, err := e.store.FailJob(jobID, "OCI_EXECUTOR_NOT_IMPLEMENTED", "real OCI SDK execution is not implemented for this job type yet; no local state was changed"); err != nil {
 		return err
 	}
 	return ErrOCIExecutorNotImplemented
+}
+
+func (e *OCIExecutor) executePublicIPBatchJob(ctx context.Context, cfg oci.ReadinessConfig, job domain.Job) error {
+	result := oci.ExecutePublicIPBatch(ctx, cfg, oci.PublicIPBatchExecutionRequest{
+		Action:        stringFromInput(job.Input["action"]),
+		CompartmentID: job.CompartmentID,
+		Count:         intFromInput(job.Input["count"]),
+		DisplayPrefix: stringFromInput(job.Input["displayPrefix"]),
+		PublicIPIDs:   stringSliceFromInput(job.Input["publicIpIds"]),
+		JobID:         job.ID,
+	})
+	if _, err := e.store.SetJobOCIRefs(job.ID, result.RequestID, ""); err != nil {
+		return err
+	}
+	if _, err := e.store.MarkJobWaitingOCI(job.ID); err != nil {
+		return ignoreConflict(err)
+	}
+	if _, err := e.store.MarkJobVerifying(job.ID); err != nil {
+		return ignoreConflict(err)
+	}
+	payload, err := structToMap(result)
+	if err != nil {
+		if _, failErr := e.store.FailJob(job.ID, "OCI_RESULT_ENCODE_FAILED", err.Error()); failErr != nil {
+			return failErr
+		}
+		return err
+	}
+	if !result.Verified {
+		if _, err := e.store.FailJob(job.ID, result.ErrorCode, result.ErrorMessage); err != nil {
+			return err
+		}
+		return errors.New(result.ErrorCode + ": " + result.ErrorMessage)
+	}
+	if _, err := e.store.CompleteJob(job.ID, payload); err != nil {
+		return ignoreConflict(err)
+	}
+	return nil
 }
 
 func (e *OCIExecutor) executeLaunchJob(ctx context.Context, cfg oci.ReadinessConfig, job domain.Job) error {
@@ -135,6 +177,7 @@ func (e *OCIExecutor) executeIPManagementJob(ctx context.Context, cfg oci.Readin
 		InstanceID:               instanceID,
 		VNICID:                   stringFromInput(job.Input["vnicId"]),
 		EnableIPv6:               boolFromInput(job.Input["enableIpv6"]),
+		DisableIPv6:              boolFromInput(job.Input["disableIpv6"]),
 		AutoConfigureIPv6:        boolFromInput(job.Input["autoConfigureIpv6"]),
 		IPv6Strategy:             stringFromInput(job.Input["ipv6Strategy"]),
 		NetworkChangeMode:        stringFromInput(job.Input["networkChangeMode"]),
@@ -185,16 +228,17 @@ func (e *OCIExecutor) executeInstanceJob(ctx context.Context, cfg oci.ReadinessC
 	}
 
 	result := oci.ExecuteInstanceLifecycleAction(ctx, cfg, oci.InstanceActionExecutionRequest{
-		InstanceID:         instanceID,
-		Action:             domain.InstanceLifecycleAction(action),
-		Graceful:           boolFromInput(job.Input["graceful"]),
-		PreserveBootVolume: boolFromInput(job.Input["preserveBootVolume"]),
-		TargetShape:        stringFromInput(job.Input["targetShape"]),
-		TargetOCPUs:        intFromInput(job.Input["targetOcpus"]),
-		TargetMemoryGB:     intFromInput(job.Input["targetMemoryGb"]),
-		TargetBootVolumeGB: intFromInput(job.Input["targetBootVolumeGb"]),
-		ExpandBootVolume:   boolFromInput(job.Input["expandBootVolume"]),
-		JobID:              job.ID,
+		InstanceID:                instanceID,
+		Action:                    domain.InstanceLifecycleAction(action),
+		Graceful:                  boolFromInput(job.Input["graceful"]),
+		PreserveBootVolume:        boolFromInput(job.Input["preserveBootVolume"]),
+		TargetShape:               stringFromInput(job.Input["targetShape"]),
+		TargetOCPUs:               intFromInput(job.Input["targetOcpus"]),
+		TargetMemoryGB:            intFromInput(job.Input["targetMemoryGb"]),
+		TargetBootVolumeGB:        intFromInput(job.Input["targetBootVolumeGb"]),
+		TargetBootVolumeVPUsPerGB: intFromInput(job.Input["targetBootVolumeVpusPerGb"]),
+		ExpandBootVolume:          boolFromInput(job.Input["expandBootVolume"]),
+		JobID:                     job.ID,
 	})
 	if _, err := e.store.SetJobOCIRefs(job.ID, result.RequestID, result.WorkRequestID); err != nil {
 		return err
@@ -262,5 +306,22 @@ func intFromInput(value any) int {
 		return int(typed)
 	default:
 		return 0
+	}
+}
+
+func stringSliceFromInput(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		return typed
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text, ok := item.(string); ok && text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }

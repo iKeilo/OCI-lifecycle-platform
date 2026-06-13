@@ -1,4 +1,4 @@
-import { Image, Moon, Save, Settings, Sun } from "lucide-react";
+import { Image, Languages, Moon, Save, Settings, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import {
@@ -10,7 +10,8 @@ import {
 const defaultAppearance: AppearanceSettings = {
   theme: "light",
   backgroundMode: "aurora",
-  backgroundImage: ""
+  backgroundImage: "",
+  language: "zh-CN"
 };
 
 const settings = [
@@ -61,7 +62,7 @@ export function SettingsPage() {
     }
     const reader = new FileReader();
     reader.onload = () => {
-      updateLocal({ ...appearance, backgroundMode: "image", backgroundImage: String(reader.result || "") });
+      updateLocal({ ...appearance, backgroundMode: "image", backgroundImage: String(reader.result || ""), language: appearance.language || "zh-CN" });
     };
     reader.readAsDataURL(file);
   }
@@ -153,6 +154,36 @@ export function SettingsPage() {
         </div>
       </section>
 
+      <section className="glass-panel section-card">
+        <div className="section-title-row">
+          <div>
+            <h2>语言</h2>
+            <p>设置平台界面默认语言。顶部栏不再放语言切换，避免和版本更新入口混在一起。</p>
+          </div>
+          <Languages size={22} />
+        </div>
+
+        <div className="choice-grid">
+          <button className={`choice-card ${appearance.language === "zh-CN" ? "active" : ""}`} type="button" onClick={() => updateLocal({ ...appearance, language: "zh-CN" })}>
+            <Languages size={22} />
+            <strong>简体中文</strong>
+            <span>默认语言，适合当前中文控制台。</span>
+          </button>
+          <button className={`choice-card ${appearance.language === "en-US" ? "active" : ""}`} type="button" onClick={() => updateLocal({ ...appearance, language: "en-US" })}>
+            <Languages size={22} />
+            <strong>English</strong>
+            <span>保留语言位，后续接入完整英文文案。</span>
+          </button>
+        </div>
+
+        <div className="button-row">
+          <button className="primary-button" type="button" disabled={saving} onClick={() => void save()}>
+            <Save size={18} />
+            {saving ? "保存中..." : "保存语言设置"}
+          </button>
+        </div>
+      </section>
+
       <div className="card-grid two">
         {settings.map(([title, description]) => (
           <section className="glass-panel section-card" key={title}>
@@ -171,6 +202,7 @@ export function SettingsPage() {
 function applyAppearance(appearance: AppearanceSettings) {
   document.documentElement.dataset.theme = appearance.theme;
   document.documentElement.dataset.background = appearance.backgroundMode;
+  document.documentElement.lang = appearance.language || "zh-CN";
   if (appearance.backgroundMode === "image" && appearance.backgroundImage) {
     document.documentElement.style.setProperty("--custom-background-image", `url("${appearance.backgroundImage}")`);
   } else {

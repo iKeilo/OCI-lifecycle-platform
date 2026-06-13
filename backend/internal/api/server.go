@@ -88,6 +88,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/account/password", s.handleUpdateAccountPassword)
 	s.mux.HandleFunc("GET /api/settings/appearance", s.handleAppearanceSettings)
 	s.mux.HandleFunc("PUT /api/settings/appearance", s.handleUpdateAppearanceSettings)
+	s.mux.HandleFunc("GET /api/budget/settings", s.handleBudgetSettings)
+	s.mux.HandleFunc("PUT /api/budget/settings", s.handleUpdateBudgetSettings)
 	s.mux.HandleFunc("GET /api/oci/readiness", s.handleOCIReadiness)
 	s.mux.HandleFunc("POST /api/oci/validate-readonly", s.handleOCIValidateReadOnly)
 	s.mux.HandleFunc("POST /api/oci/smoke/e2-micro-create-delete", s.handleOCIE2MicroSmoke)
@@ -110,6 +112,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/instances/{id}/reboot", s.handleRebootInstance)
 	s.mux.HandleFunc("POST /api/instances/{id}/ip-tasks", s.handleCreateIPTask)
 	s.mux.HandleFunc("GET /api/network/inventory", s.handleNetworkInventory)
+	s.mux.HandleFunc("POST /api/network/public-ips/batch", s.handlePublicIPBatchTask)
 	s.mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	s.mux.HandleFunc("GET /api/jobs/{id}", s.handleJob)
 	s.mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancelJob)
@@ -238,6 +241,24 @@ func (s *Server) handleUpdateAppearanceSettings(w http.ResponseWriter, r *http.R
 		return
 	}
 	settings, err := s.store.SetAppearanceSettings(req)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleBudgetSettings(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.store.GetBudgetSettings())
+}
+
+func (s *Server) handleUpdateBudgetSettings(w http.ResponseWriter, r *http.Request) {
+	var req domain.BudgetSettings
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+		return
+	}
+	settings, err := s.store.SetBudgetSettings(req)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -524,6 +545,33 @@ func (s *Server) handleNetworkInventory(w http.ResponseWriter, r *http.Request) 
 		VCNID:         query.Get("vcnId"),
 	})
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handlePublicIPBatchTask(w http.ResponseWriter, r *http.Request) {
+	var req domain.PublicIPBatchTaskRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+		return
+	}
+	if s.executionMode == "oci" {
+		cfg, profile, err := s.resolveOCIConfig(req.ProfileID, req.Region)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "OCI_PROFILE_RESOLVE_FAILED", err.Error())
+			return
+		}
+		req.ProfileID = profile.ID
+		req.Region = cfg.Region
+		if strings.TrimSpace(req.CompartmentID) == "" {
+			req.CompartmentID = cfg.TenancyOCID
+		}
+	}
+	job, err := s.store.CreatePublicIPBatchTask(req, actorFromRequest(r))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	s.enqueue(job.ID)
+	writeJSON(w, http.StatusAccepted, sanitizeJob(job))
 }
 
 func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {

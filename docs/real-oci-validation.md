@@ -133,6 +133,16 @@ npm run build
 
 ## 已验证能力
 
+### 启动盘容量与性能
+
+结果：已验证接口与库存同步；真实性能调整未在既有实例上执行。
+
+- 创建实例页面已将启动盘拆分为“容量 GB”和“性能 VPUs/GB”两个输入区域。
+- 实例升降级页面已支持填写目标启动盘容量和目标启动盘性能，并展示调整后的每小时、每天、每月预算变化。
+- 后端任务链已接入 `bootVolumeVpusPerGb` / `targetBootVolumeVpusPerGb`，创建实例时传入 OCI `BootVolumeVpusPerGB`，升降级时通过 `UpdateBootVolume.VpusPerGB` 调整性能。
+- 真实 OCI 库存同步已验证能返回 `bootVolumeGb` 和 `bootVolumeVpusPerGb`；测试服务器当前运行实例返回 50 GB / 10 VPUs/GB 与 100 GB / 10 VPUs/GB。
+- 价格估算采用 OCI 官方价格表口径：Block Volume Storage $0.0255/GB-month，Block Volume Performance Units $0.0017/VPU/GB-month。最终账单仍以 OCI Cost Analysis / Usage 报表为准。
+
 ### OCI Profile
 
 结果：已验证。
@@ -212,7 +222,10 @@ npm run build
 - 已有实例上的保留公网 IP 绑定、解绑、释放 UI。
 - Automation repository 与调度器。
 - Audit 查询、筛选和导出。
-- RBAC、审批流、预算护栏。
+- RBAC、审批流、预算护栏后端执行链。
+- 预算管理 Web 入口和实施文档已新增；OCI Budgets/Cost Usage/自动降配/删机尚未做真实验证。
+- 创建实例页切换 Shape 后自动刷新兼容 Image 已实现，尚未做真实 OCI 专项验证。
+- 非 Flex / 非 E2 Micro Shape 的预算估算状态展示已实现；统一后端价格表覆盖尚未专项验证。
 - 通知渠道：Webhook。
 - SMTP 邮件真实投递：接口和配置页已落地，仍需有效 SMTP 凭证后专项验证。
 
@@ -256,7 +269,10 @@ npm run build
 仍未完成或未专项验证：
 
 - Instance Configuration / Instance Pool / Autoscaling 的真实 OCI executor。
-- RBAC 多用户、审批流、预算护栏。
+- RBAC 多用户、审批流、预算护栏后端执行链。
+- OCI Budgets 同步、Cost Usage 采集、预算候选 dry-run、自动降配和预算熔断删机真实验证。
+- Shape -> Image 兼容刷新：至少验证 E3.Flex、A1.Flex、E2.1.Micro 和一个非 Flex Shape。
+- 预算估算覆盖：验证 Flex、固定 Shape、Always Free、价格未接入四类展示状态。
 - Template CRUD 与模板版本化。
 - Automation repository、调度器、定时/指标策略真实执行。
 - 审计导出。

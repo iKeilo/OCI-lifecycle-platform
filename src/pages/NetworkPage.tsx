@@ -4,10 +4,12 @@ import type { ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { StatusPill } from "../components/StatusPill";
 import {
+  createPublicIPBatchTask,
   getLaunchOptions,
   getNetworkInventory,
   type LaunchOption,
-  type NetworkInventory
+  type NetworkInventory,
+  type PublicIPResource
 } from "../services/api";
 
 const emptyInventory: NetworkInventory = {
@@ -26,8 +28,13 @@ export function NetworkPage() {
   const [compartments, setCompartments] = useState<LaunchOption[]>([]);
   const [vcns, setVCNs] = useState<LaunchOption[]>([]);
   const [filters, setFilters] = useState({ profileId: "", compartmentId: "", vcnId: "" });
+  const [batchCount, setBatchCount] = useState(1);
+  const [batchPrefix, setBatchPrefix] = useState("reserved-public-ip");
+  const [selectedPublicIpIds, setSelectedPublicIpIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
+  const [isSubmittingBatch, setIsSubmittingBatch] = useState(false);
   const [error, setError] = useState("");
+  const [taskMessage, setTaskMessage] = useState("");
 
   async function load() {
     setLoading(true);
@@ -41,6 +48,10 @@ export function NetworkPage() {
       setCompartments(options.compartments);
       setVCNs(options.vcns);
       setInventory(nextInventory);
+      setSelectedPublicIpIds((current) => {
+        const nextDeletableIds = new Set(nextInventory.publicIps.filter(canDeleteReservedIP).map((item) => item.id));
+        return new Set([...current].filter((id) => nextDeletableIds.has(id)));
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "网络清单加载失败");
     } finally {
@@ -54,7 +65,50 @@ export function NetworkPage() {
 
   const reserved = useMemo(() => inventory.publicIps.filter((item) => item.lifetime === "RESERVED"), [inventory.publicIps]);
   const assignedReserved = reserved.filter((item) => item.assignedEntityId);
+  const deletableReserved = reserved.filter(canDeleteReservedIP);
   const ipv6EnabledSubnets = inventory.subnets.filter((item) => item.ipv6CidrBlocks?.length > 0);
+
+  function togglePublicIP(id: string) {
+    setSelectedPublicIpIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function selectAllDeletablePublicIPs() {
+    setSelectedPublicIpIds(new Set(deletableReserved.map((item) => item.id)));
+  }
+
+  async function submitPublicIPBatch(action: "create" | "delete") {
+    const deletableIds = new Set(deletableReserved.map((item) => item.id));
+    const publicIpIds = Array.from(selectedPublicIpIds).filter((id) => deletableIds.has(id));
+    if (action === "delete" && publicIpIds.length === 0) {
+      setError("请选择未绑定的预留公网 IP 后再批量删除。");
+      return;
+    }
+    setIsSubmittingBatch(true);
+    setTaskMessage("");
+    setError("");
+    try {
+      const job = await createPublicIPBatchTask({
+        action,
+        profileId: filters.profileId,
+        compartmentId: filters.compartmentId,
+        count: action === "create" ? batchCount : undefined,
+        displayPrefix: action === "create" ? batchPrefix : undefined,
+        publicIpIds: action === "delete" ? publicIpIds : undefined,
+        note: action === "create" ? "批量申请预留公网 IP" : "批量删除未绑定预留公网 IP"
+      });
+      setTaskMessage(`已提交${action === "create" ? "批量申请" : "批量删除"}任务 ${job.id}，请到任务中心查看执行结果。`);
+      if (action === "delete") setSelectedPublicIpIds(new Set());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "提交批量公网 IP 任务失败");
+    } finally {
+      setIsSubmittingBatch(false);
+    }
+  }
 
   return (
     <div className="page-stack">
@@ -106,6 +160,7 @@ export function NetworkPage() {
       </section>
 
       {error ? <div className="inline-error">{error}</div> : null}
+      {taskMessage ? <div className="inline-success">{taskMessage}</div> : null}
       {!loading && inventory.errorMessage ? (
         <div className="inline-error">
           {inventory.errorCode}: {inventory.errorMessage}
@@ -128,17 +183,34 @@ export function NetworkPage() {
           </div>
           <ShieldCheck size={22} />
         </div>
-        <NetworkTable
-          compactLastColumn
-          columns={["名称", "IP", "生命周期", "状态", "绑定资源", "OCID"]}
-          rows={reserved.map((item) => [
-            item.displayName,
-            item.ipAddress || "-",
-            item.lifetime || "-",
-            item.lifecycleState || "-",
-            item.assignedEntityId || "未绑定",
-            item.id
-          ])}
+        <div className="public-ip-batch-panel">
+          <div className="public-ip-batch-create">
+            <label>
+              申请数量
+              <input type="number" min={1} max={50} value={batchCount} onChange={(event) => setBatchCount(clampBatchCount(Number(event.target.value)))} />
+            </label>
+            <label>
+              名称前缀
+              <input value={batchPrefix} onChange={(event) => setBatchPrefix(event.target.value)} placeholder="reserved-public-ip" />
+            </label>
+            <button className="primary-button" type="button" disabled={isSubmittingBatch || batchCount <= 0} onClick={() => void submitPublicIPBatch("create")}>
+              批量申请
+            </button>
+          </div>
+          <div className="public-ip-batch-actions">
+            <span>已选择 {selectedPublicIpIds.size} 个，未绑定可删除 {deletableReserved.length} 个</span>
+            <button className="secondary-button" type="button" disabled={deletableReserved.length === 0} onClick={selectAllDeletablePublicIPs}>
+              选择未绑定
+            </button>
+            <button className="secondary-button danger" type="button" disabled={isSubmittingBatch || selectedPublicIpIds.size === 0} onClick={() => void submitPublicIPBatch("delete")}>
+              批量删除
+            </button>
+          </div>
+        </div>
+        <ReservedPublicIPTable
+          rows={reserved}
+          selectedIds={selectedPublicIpIds}
+          onToggle={togglePublicIP}
         />
       </section>
 
@@ -179,6 +251,63 @@ export function NetworkPage() {
       </section>
     </div>
   );
+}
+
+function ReservedPublicIPTable({
+  rows,
+  selectedIds,
+  onToggle
+}: {
+  rows: PublicIPResource[];
+  selectedIds: Set<string>;
+  onToggle: (id: string) => void;
+}) {
+  if (rows.length === 0) {
+    return <div className="async-state">暂无预留公网 IP。可以使用上方“批量申请”创建 Reserved Public IP。</div>;
+  }
+  return (
+    <div className="table-wrap network-table-wrap">
+      <table className="network-table reserved-ip-table">
+        <thead>
+          <tr>
+            <th>选择</th>
+            <th>名称</th>
+            <th>IP</th>
+            <th>状态</th>
+            <th>绑定资源</th>
+            <th>OCID</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((item) => {
+            const canDelete = canDeleteReservedIP(item);
+            return (
+              <tr className={!canDelete ? "disabled-row" : ""} key={item.id}>
+                <td>
+                  <input
+                    aria-label={`选择 ${item.displayName || item.ipAddress || item.id}`}
+                    checked={selectedIds.has(item.id)}
+                    disabled={!canDelete}
+                    type="checkbox"
+                    onChange={() => onToggle(item.id)}
+                  />
+                </td>
+                <td>{item.displayName || "-"}</td>
+                <td>{item.ipAddress || "-"}</td>
+                <td>{item.lifecycleState || "-"}</td>
+                <td>{item.assignedEntityId || "未绑定"}</td>
+                <td className="linkish ocid-cell" title={item.id}>{item.id}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function canDeleteReservedIP(item: PublicIPResource) {
+  return !item.assignedEntityId && item.lifetime === "RESERVED" && String(item.lifecycleState || "").toUpperCase() !== "ASSIGNED";
 }
 
 function NetworkMetric({ icon, title, value, hint }: { icon: ReactNode; title: string; value: string | number; hint: string }) {
@@ -228,4 +357,9 @@ function NetworkTable({ columns, rows, compactLastColumn = false }: { columns: s
       </table>
     </div>
   );
+}
+
+function clampBatchCount(value: number) {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(50, Math.max(1, Math.floor(value)));
 }

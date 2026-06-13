@@ -35,6 +35,18 @@ const statusFilters: Array<{ value: "All" | Instance["status"]; label: string }>
 ];
 
 const ipModes = ["保留当前公网 IP", "分配临时公网 IP", "绑定保留公网 IP", "释放公网 IP"];
+const HOURS_PER_DAY = 24;
+const HOURS_PER_MONTH = 730;
+const ALWAYS_FREE_E2_MICRO_COUNT = 2;
+const ALWAYS_FREE_A1_OCPUS = 4;
+const ALWAYS_FREE_A1_MEMORY_GB = 24;
+const ALWAYS_FREE_BOOT_VOLUME_GB = 200;
+const ALWAYS_FREE_BOOT_VOLUME_VPUS_PER_GB = 10;
+const STANDARD_FLEX_PRICE = { ocpuHour: 0.0255, memoryGbHour: 0.0015 };
+const A1_FLEX_PRICE = { ocpuHour: 0.01, memoryGbHour: 0.0015 };
+const BOOT_VOLUME_GB_MONTH = 0.0255;
+const BOOT_VOLUME_VPU_GB_MONTH = 0.0017;
+const BOOT_VOLUME_VPU_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
 
 function isTerminalStatus(status: Instance["status"]) {
   return status === "Terminating" || status === "Terminated";
@@ -84,6 +96,7 @@ export function InstancesPage() {
         targetOcpus: 0,
         targetMemoryGb: 0,
         targetBootVolumeGb: 0,
+        targetBootVolumeVpusPerGb: 0,
         expandBootVolume: false,
         snapshotBefore: true,
         note: "",
@@ -201,6 +214,7 @@ export function InstancesPage() {
                 <div><dt>区域</dt><dd>{instance.region}</dd></div>
                 <div><dt>公网 IP</dt><dd className="linkish">{instance.primaryIp}</dd></div>
                 <div><dt>私网 IP</dt><dd>{instance.privateIp}</dd></div>
+                <div><dt>IPv6</dt><dd className={instanceIPv6Addresses(instance).length > 0 ? "linkish" : ""}>{formatIPv6(instance)}</dd></div>
                 <div><dt>配置</dt><dd>{instance.ocpus} OCPU / {instance.memoryGb} GB</dd></div>
               </dl>
 
@@ -272,6 +286,7 @@ export function InstancesPage() {
       {resizeInstance ? (
         <ResizeModal
           instance={resizeInstance}
+          instances={instances}
           onClose={() => setResizeInstance(null)}
           onSubmit={async (payload) => {
             await submitAction(resizeInstance, "RESIZE", payload);
@@ -326,19 +341,55 @@ function ConfirmActionModal({
 
 function ResizeModal({
   instance,
+  instances,
   onClose,
   onSubmit
 }: {
   instance: Instance;
+  instances: Instance[];
   onClose: () => void;
   onSubmit: (payload: Partial<InstanceActionPayload>) => Promise<void>;
 }) {
+  const currentBootVolumeGb = Math.max(50, Number(instance.bootVolumeGb) || 0);
+  const currentBootVolumeVpusPerGb = normalizeBootVolumeVpus(Number(instance.bootVolumeVpusPerGb) || 10);
   const [targetShape, setTargetShape] = useState(instance.shape);
-  const [targetOcpus, setTargetOcpus] = useState(instance.ocpus);
-  const [targetMemoryGb, setTargetMemoryGb] = useState(instance.memoryGb);
-  const [targetBootVolumeGb, setTargetBootVolumeGb] = useState(instance.bootVolumeGb);
+  const [targetOcpus, setTargetOcpus] = useState(Math.max(1, Number(instance.ocpus) || 1));
+  const [targetMemoryGb, setTargetMemoryGb] = useState(Math.max(1, Number(instance.memoryGb) || 1));
+  const [targetBootVolumeGb, setTargetBootVolumeGb] = useState(currentBootVolumeGb);
+  const [targetBootVolumeVpusPerGb, setTargetBootVolumeVpusPerGb] = useState(currentBootVolumeVpusPerGb);
   const [snapshotBefore, setSnapshotBefore] = useState(true);
-  const expandBootVolume = targetBootVolumeGb > instance.bootVolumeGb;
+  const [validationError, setValidationError] = useState("");
+  const targetIsFlexible = isFlexibleShapeName(targetShape);
+  const bootVolumeTooSmall = targetBootVolumeGb < currentBootVolumeGb;
+  const expandBootVolume = targetBootVolumeGb > currentBootVolumeGb;
+  const budgetChange = estimateResizeBudgetChange(instance, instances, {
+    targetShape,
+    targetOcpus: targetIsFlexible ? targetOcpus : Math.max(1, Number(instance.ocpus) || 1),
+    targetMemoryGb: targetIsFlexible ? targetMemoryGb : Math.max(1, Number(instance.memoryGb) || 1),
+    targetBootVolumeGb,
+    targetBootVolumeVpusPerGb
+  });
+
+  function submitResize() {
+    if (bootVolumeTooSmall) {
+      setValidationError(`目标启动盘不能小于当前大小 ${currentBootVolumeGb} GB。OCI 启动盘只能扩容，不能降盘。`);
+      return;
+    }
+    if (targetIsFlexible && (targetOcpus <= 0 || targetMemoryGb <= 0)) {
+      setValidationError("Flex Shape 的目标 OCPU 和内存必须大于 0。");
+      return;
+    }
+    setValidationError("");
+    void onSubmit({
+      targetShape,
+      targetOcpus: targetIsFlexible ? targetOcpus : Math.max(1, Number(instance.ocpus) || 1),
+      targetMemoryGb: targetIsFlexible ? targetMemoryGb : Math.max(1, Number(instance.memoryGb) || 1),
+      targetBootVolumeGb,
+      targetBootVolumeVpusPerGb,
+      expandBootVolume,
+      snapshotBefore
+    });
+  }
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
@@ -361,37 +412,77 @@ function ResizeModal({
           <div className="form-grid">
             <label>
               目标 Shape
-              <input value={targetShape} onChange={(event) => setTargetShape(event.target.value)} />
+              <input
+                value={targetShape}
+                onChange={(event) => {
+                  setTargetShape(event.target.value);
+                  setValidationError("");
+                }}
+              />
             </label>
             <label>
               目标 OCPU
-              <input type="number" min={1} value={targetOcpus} onChange={(event) => setTargetOcpus(Number(event.target.value))} />
+              <input
+                disabled={!targetIsFlexible}
+                type="number"
+                min={1}
+                value={targetOcpus}
+                onChange={(event) => setTargetOcpus(Number(event.target.value))}
+              />
             </label>
             <label>
               目标内存 GB
-              <input type="number" min={1} value={targetMemoryGb} onChange={(event) => setTargetMemoryGb(Number(event.target.value))} />
+              <input
+                disabled={!targetIsFlexible}
+                type="number"
+                min={1}
+                value={targetMemoryGb}
+                onChange={(event) => setTargetMemoryGb(Number(event.target.value))}
+              />
             </label>
             <label>
               目标启动盘 GB
               <input
                 type="number"
-                min={instance.bootVolumeGb}
+                min={currentBootVolumeGb}
                 value={targetBootVolumeGb}
-                onChange={(event) => setTargetBootVolumeGb(Number(event.target.value))}
+                onChange={(event) => {
+                  setTargetBootVolumeGb(Number(event.target.value));
+                  setValidationError("");
+                }}
               />
             </label>
+            <label>
+              目标硬盘性能
+              <select value={targetBootVolumeVpusPerGb} onChange={(event) => setTargetBootVolumeVpusPerGb(Number(event.target.value))}>
+                {BOOT_VOLUME_VPU_OPTIONS.map((value) => (
+                  <option value={value} key={value}>
+                    {value} VPUs/GB{value === 10 ? " / Balanced" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
+          {!targetIsFlexible ? (
+            <p className="muted-line">当前目标 Shape 为固定规格，不支持编辑 OCPU 和内存，提交时不会向 OCI 发送 ShapeConfig。</p>
+          ) : null}
         </div>
         <div className="switch-row">
           <div>
-            <strong>硬盘扩容</strong>
-            <p>当前启动盘 {instance.bootVolumeGb} GB，提交后会自动执行 OCI Boot Volume 扩容程序。一旦扩容无法降盘。</p>
+            <strong>硬盘扩容与性能</strong>
+            <p>当前启动盘 {currentBootVolumeGb} GB / {currentBootVolumeVpusPerGb} VPUs/GB。容量只能往上调；性能可在 10-120 VPUs/GB 范围内调整。</p>
           </div>
-          <div className={`status-chip ${expandBootVolume ? "success" : ""}`}>
+          <div className={`status-chip ${expandBootVolume ? "success" : bootVolumeTooSmall ? "failed" : ""}`}>
             <HardDrive size={15} />
-            {expandBootVolume ? `扩容到 ${targetBootVolumeGb} GB` : "不扩容"}
+            {bootVolumeTooSmall ? "不能降盘" : expandBootVolume ? `扩容到 ${targetBootVolumeGb} GB` : "容量不变"} / {targetBootVolumeVpusPerGb} VPUs
           </div>
         </div>
+        <ResizeBudgetCard budget={budgetChange} />
+        {bootVolumeTooSmall || validationError ? (
+          <div className="inline-error">
+            {validationError || `目标启动盘不能小于当前大小 ${currentBootVolumeGb} GB。OCI 启动盘只能扩容，不能降盘。`}
+          </div>
+        ) : null}
         <div className="switch-row">
           <div>
             <strong>变更前记录快照</strong>
@@ -407,11 +498,47 @@ function ResizeModal({
           <button className="secondary-button" onClick={onClose}>取消</button>
           <button
             className="primary-button"
-            onClick={() => void onSubmit({ targetShape, targetOcpus, targetMemoryGb, targetBootVolumeGb, expandBootVolume, snapshotBefore })}
+            disabled={bootVolumeTooSmall}
+            onClick={submitResize}
           >
             创建升降级任务
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+type ResizeBudgetEstimate = {
+  currentHourly: number;
+  targetHourly: number;
+  deltaHourly: number;
+  deltaDaily: number;
+  deltaMonthly: number;
+  statusLabel: string;
+  blockers: string[];
+};
+
+function ResizeBudgetCard({ budget }: { budget: ResizeBudgetEstimate }) {
+  return (
+    <div className="resize-budget-card">
+      <div>
+        <span>当前每小时</span>
+        <strong>{formatMoney(budget.currentHourly, "hour")}</strong>
+      </div>
+      <div>
+        <span>目标每小时</span>
+        <strong>{formatMoney(budget.targetHourly, "hour")}</strong>
+      </div>
+      <div className={budget.deltaHourly > 0 ? "increase" : budget.deltaHourly < 0 ? "decrease" : ""}>
+        <span>预算变化</span>
+        <strong>{formatDeltaMoney(budget.deltaHourly, "hour")} / 小时</strong>
+        <small>{formatDeltaMoney(budget.deltaDaily, "day")} / 天 · {formatDeltaMoney(budget.deltaMonthly, "month")} / 月</small>
+      </div>
+      <div>
+        <span>免费额度判断</span>
+        <strong>{budget.statusLabel}</strong>
+        {budget.blockers.length > 0 ? <small>{budget.blockers.join("；")}</small> : <small>提升后的计算、容量和性能仍在免费边界内</small>}
       </div>
     </div>
   );
@@ -426,12 +553,14 @@ function IpManagementModal({
   onClose: () => void;
   onCreated: () => Promise<void>;
 }) {
+  const existingIPv6Addresses = instanceIPv6Addresses(instance);
+  const hasIPv6 = existingIPv6Addresses.length > 0;
   const [mode, setMode] = useState(ipModes[0]);
   const [reservedPublicIp, setReservedPublicIp] = useState("");
   const [dnsLabel, setDNSLabel] = useState(instance.name);
   const [vnicId, setVnicId] = useState("primary");
   const [note, setNote] = useState("");
-  const [enableIPv6, setEnableIPv6] = useState(false);
+  const [enableIPv6, setEnableIPv6] = useState(hasIPv6);
   const [ipv6Strategy, setIpv6Strategy] = useState<"assign_only" | "additive" | "clone_route_table" | "replace_public_path">("additive");
   const [routeTableMode, setRouteTableMode] = useState<"merge_existing" | "clone">("merge_existing");
   const [securityMode, setSecurityMode] = useState<"append" | "none">("append");
@@ -444,6 +573,7 @@ function IpManagementModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [resultMessage, setResultMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const disablingIPv6 = hasIPv6 && !enableIPv6;
 
   async function handleCreateTask() {
     setIsSubmitting(true);
@@ -455,8 +585,9 @@ function IpManagementModal({
         reservedPublicIp,
         dnsLabel,
         vnicId,
-        note,
+        note: note || (disablingIPv6 ? "disable-ipv6" : ""),
         enableIpv6: enableIPv6,
+        disableIpv6: disablingIPv6,
         autoConfigureIpv6: enableIPv6 && ipv6Strategy !== "assign_only",
         ipv6Strategy,
         networkChangeMode: ipv6Strategy,
@@ -488,7 +619,7 @@ function IpManagementModal({
             </div>
             <div>
               <h2>IP 管理</h2>
-              <p>{instance.name} 的公网 IP、私网 IP 与保留 IP 操作。</p>
+              <p>{instance.name} 的公网 IP、私网 IP、IPv6 与保留 IP 操作。</p>
             </div>
           </div>
           <button className="icon-button bordered" aria-label="关闭 IP 管理" onClick={onClose}>
@@ -499,6 +630,7 @@ function IpManagementModal({
         <div className="modal-summary-card">
           <div><span>公网 IP</span><strong>{instance.primaryIp}</strong></div>
           <div><span>私网 IP</span><strong>{instance.privateIp}</strong></div>
+          <div><span>IPv6</span><strong>{existingIPv6Addresses.length > 0 ? existingIPv6Addresses.join(", ") : "未分配"}</strong></div>
           <div><span>区域</span><strong>{instance.region}</strong></div>
         </div>
 
@@ -546,10 +678,16 @@ function IpManagementModal({
           <div className="switch-row">
             <div>
               <strong>启用 IPv6</strong>
-              <p>如果当前子网支持 IPv6，可创建任务为实例分配 IPv6 地址。</p>
+              <p>{hasIPv6 ? "当前实例已有 IPv6，关闭后会创建任务删除该 VNIC 上的 IPv6 地址。" : "如果当前子网支持 IPv6，可创建任务为实例分配 IPv6 地址。"}</p>
             </div>
             <button className={`toggle-switch ${enableIPv6 ? "on" : ""}`} onClick={() => setEnableIPv6((value) => !value)} />
           </div>
+          {disablingIPv6 ? (
+            <div className="modal-warning">
+              <ShieldAlert size={18} />
+              <span>提交后将调用 OCI DeleteIpv6 关闭当前实例 IPv6。正在使用 IPv6 的 SSH、HTTP、DNS 或业务连接会中断。</span>
+            </div>
+          ) : null}
           {enableIPv6 ? (
             <div className="form-section compact">
               <div className="form-section-title">
@@ -674,12 +812,124 @@ function IpManagementModal({
         <div className="button-row">
           <button className="secondary-button" onClick={onClose}>取消</button>
           <button className="primary-button" disabled={isSubmitting} onClick={handleCreateTask}>
-            {isSubmitting ? "创建中..." : "创建 IP 任务"}
+            {isSubmitting ? "创建中..." : disablingIPv6 ? "创建关闭 IPv6 任务" : "创建 IP 任务"}
           </button>
         </div>
       </div>
     </div>
   );
+}
+
+function instanceIPv6Addresses(instance: Instance) {
+  const values = [...(instance.ipv6Addresses ?? []), instance.primaryIpv6].map((value) => String(value || "").trim()).filter(Boolean);
+  return Array.from(new Set(values));
+}
+
+function formatIPv6(instance: Instance) {
+  const addresses = instanceIPv6Addresses(instance);
+  if (addresses.length === 0) return "未分配";
+  if (addresses.length === 1) return addresses[0];
+  return `${addresses[0]} +${addresses.length - 1}`;
+}
+
+function isFlexibleShapeName(shape: string) {
+  return String(shape || "").trim().toLowerCase().endsWith(".flex");
+}
+
+function estimateResizeBudgetChange(
+  instance: Instance,
+  instances: Instance[],
+  target: {
+    targetShape: string;
+    targetOcpus: number;
+    targetMemoryGb: number;
+    targetBootVolumeGb: number;
+    targetBootVolumeVpusPerGb: number;
+  }
+): ResizeBudgetEstimate {
+  const currentHourly = estimateAccountHourly(instances).hourly;
+  const targetInstance = {
+    ...instance,
+    shape: target.targetShape,
+    ocpus: Number(target.targetOcpus) || 0,
+    memoryGb: Number(target.targetMemoryGb) || 0,
+    bootVolumeGb: Math.max(50, Number(target.targetBootVolumeGb) || 0),
+    bootVolumeVpusPerGb: normalizeBootVolumeVpus(Number(target.targetBootVolumeVpusPerGb) || 10)
+  };
+  const targetInstances = instances.map((item) => (item.id === instance.id ? targetInstance : item));
+  const targetEstimate = estimateAccountHourly(targetInstances);
+  const targetHourly = targetEstimate.hourly;
+  const deltaHourly = targetHourly - currentHourly;
+  return {
+    currentHourly,
+    targetHourly,
+    deltaHourly,
+    deltaDaily: deltaHourly * HOURS_PER_DAY,
+    deltaMonthly: deltaHourly * HOURS_PER_MONTH,
+    statusLabel: targetEstimate.blockers.length === 0 ? "免费额度内" : "超出免费额度",
+    blockers: targetEstimate.blockers
+  };
+}
+
+function estimateAccountHourly(instances: Instance[]) {
+  const active = instances.filter((instance) => !String(instance.status).toLowerCase().includes("terminat"));
+  const e2Micro = active.filter((instance) => instance.shape === "VM.Standard.E2.1.Micro");
+  const a1Instances = active.filter((instance) => instance.shape === "VM.Standard.A1.Flex");
+  const standardInstances = active.filter((instance) => instance.shape !== "VM.Standard.E2.1.Micro" && instance.shape !== "VM.Standard.A1.Flex");
+  const a1Ocpus = a1Instances.reduce((sum, instance) => sum + (Number(instance.ocpus) || 0), 0);
+  const a1MemoryGb = a1Instances.reduce((sum, instance) => sum + (Number(instance.memoryGb) || 0), 0);
+  const bootVolumeGb = active.reduce((sum, instance) => sum + Math.max(50, Number(instance.bootVolumeGb) || 0), 0);
+  const billableBootGb = Math.max(0, bootVolumeGb - ALWAYS_FREE_BOOT_VOLUME_GB);
+  const billableBaseVpusGb = active.reduce((sum, instance) => {
+    const gb = Math.max(50, Number(instance.bootVolumeGb) || 0);
+    const vpus = normalizeBootVolumeVpus(Number(instance.bootVolumeVpusPerGb) || 10);
+    if (bootVolumeGb <= ALWAYS_FREE_BOOT_VOLUME_GB) return sum;
+    const ratio = bootVolumeGb > 0 ? billableBootGb / bootVolumeGb : 0;
+    return sum + gb * ratio * Math.min(vpus, ALWAYS_FREE_BOOT_VOLUME_VPUS_PER_GB);
+  }, 0);
+  const billableUpliftVpusGb = active.reduce((sum, instance) => {
+    const gb = Math.max(50, Number(instance.bootVolumeGb) || 0);
+    const vpus = normalizeBootVolumeVpus(Number(instance.bootVolumeVpusPerGb) || 10);
+    return sum + gb * Math.max(0, vpus - ALWAYS_FREE_BOOT_VOLUME_VPUS_PER_GB);
+  }, 0);
+  const storageHourly =
+    (billableBootGb * BOOT_VOLUME_GB_MONTH + (billableBaseVpusGb + billableUpliftVpusGb) * BOOT_VOLUME_VPU_GB_MONTH) / HOURS_PER_MONTH;
+  const e2BillableCount = Math.max(0, e2Micro.length - ALWAYS_FREE_E2_MICRO_COUNT);
+  const e2Hourly = e2BillableCount * (STANDARD_FLEX_PRICE.ocpuHour + STANDARD_FLEX_PRICE.memoryGbHour);
+  const a1Hourly =
+    Math.max(0, a1Ocpus - ALWAYS_FREE_A1_OCPUS) * A1_FLEX_PRICE.ocpuHour +
+    Math.max(0, a1MemoryGb - ALWAYS_FREE_A1_MEMORY_GB) * A1_FLEX_PRICE.memoryGbHour;
+  const standardHourly = standardInstances.reduce(
+    (sum, instance) => sum + (Number(instance.ocpus) || 0) * STANDARD_FLEX_PRICE.ocpuHour + (Number(instance.memoryGb) || 0) * STANDARD_FLEX_PRICE.memoryGbHour,
+    0
+  );
+  const blockers = [
+    ...(e2BillableCount > 0 ? [`E2.1.Micro 超出 ${e2BillableCount} 台`] : []),
+    ...(a1Ocpus > ALWAYS_FREE_A1_OCPUS ? [`A1 OCPU ${a1Ocpus}/${ALWAYS_FREE_A1_OCPUS}`] : []),
+    ...(a1MemoryGb > ALWAYS_FREE_A1_MEMORY_GB ? [`A1 内存 ${a1MemoryGb}/${ALWAYS_FREE_A1_MEMORY_GB} GB`] : []),
+    ...(billableBootGb > 0 ? [`启动盘容量超出 ${billableBootGb} GB`] : []),
+    ...(billableUpliftVpusGb > 0 ? [`硬盘性能超过 ${ALWAYS_FREE_BOOT_VOLUME_VPUS_PER_GB} VPUs/GB`] : []),
+    ...(standardInstances.length > 0 ? [`${standardInstances.length} 台非 Always Free Shape`] : [])
+  ];
+  return {
+    hourly: e2Hourly + a1Hourly + standardHourly + storageHourly,
+    blockers
+  };
+}
+
+function normalizeBootVolumeVpus(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return 10;
+  return Math.min(120, Math.max(10, Math.round(value)));
+}
+
+function formatMoney(value: number, unit: "hour" | "day" | "month") {
+  const digits = unit === "hour" ? 4 : 2;
+  return `$${value.toFixed(digits)}`;
+}
+
+function formatDeltaMoney(value: number, unit: "hour" | "day" | "month") {
+  const prefix = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${prefix}${formatMoney(Math.abs(value), unit)}`;
 }
 
 function actionLabel(action: InstanceActionPayload["action"]) {

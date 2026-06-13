@@ -14,6 +14,7 @@ type IPManagementExecutionRequest struct {
 	InstanceID               string
 	VNICID                   string
 	EnableIPv6               bool
+	DisableIPv6              bool
 	AutoConfigureIPv6        bool
 	IPv6Strategy             string
 	NetworkChangeMode        string
@@ -58,6 +59,8 @@ type IPManagementExecutionResult struct {
 	IPv6ID                 string            `json:"ipv6Id,omitempty"`
 	IPv6Address            string            `json:"ipv6Address,omitempty"`
 	IPv6State              string            `json:"ipv6State,omitempty"`
+	DeletedIPv6IDs         []string          `json:"deletedIpv6Ids,omitempty"`
+	DeletedIPv6Addresses   []string          `json:"deletedIpv6Addresses,omitempty"`
 	RequestID              string            `json:"requestId,omitempty"`
 	WorkRequestID          string            `json:"workRequestId,omitempty"`
 	WorkRequestIDs         []string          `json:"workRequestIds,omitempty"`
@@ -91,9 +94,9 @@ func ExecuteIPManagement(ctx context.Context, cfg ReadinessConfig, req IPManagem
 		result.ErrorMessage = "OCI instance OCID is required"
 		return result
 	}
-	if !req.EnableIPv6 {
+	if !req.EnableIPv6 && !req.DisableIPv6 {
 		result.ErrorCode = "OCI_IP_OPERATION_UNSUPPORTED"
-		result.ErrorMessage = "only IPv6 assignment is implemented for real OCI IP management"
+		result.ErrorMessage = "only IPv6 assignment and deletion are implemented for real OCI IP management"
 		return result
 	}
 
@@ -127,6 +130,9 @@ func ExecuteIPManagement(ctx context.Context, cfg ReadinessConfig, req IPManagem
 	result.VNICID = stringValue(vnic.Id)
 	result.SubnetID = stringValue(vnic.SubnetId)
 	result.ExistingIPv6 = append(result.ExistingIPv6, vnic.Ipv6Addresses...)
+	if req.DisableIPv6 {
+		return deleteIPv6ForVNIC(ctx, clients, req, result)
+	}
 	if len(result.ExistingIPv6) > 0 {
 		result.Noop = true
 		result.Verified = true
@@ -219,6 +225,56 @@ func ExecuteIPManagement(ctx context.Context, cfg ReadinessConfig, req IPManagem
 	return result
 }
 
+func deleteIPv6ForVNIC(ctx context.Context, clients Clients, req IPManagementExecutionRequest, result IPManagementExecutionResult) IPManagementExecutionResult {
+	if result.VNICID == "" {
+		result.ErrorCode = "OCI_VNIC_ID_REQUIRED"
+		result.ErrorMessage = "selected VNIC is required to delete IPv6 addresses"
+		return result
+	}
+	page := ""
+	for {
+		listResp, err := clients.VirtualNetwork.ListIpv6s(ctx, core.ListIpv6sRequest{
+			VnicId:       common.String(result.VNICID),
+			Limit:        common.Int(100),
+			Page:         optionalString(page),
+			OpcRequestId: requestID("codex-list-ipv6", req.JobID),
+		})
+		appendFirstRequestID(&result.RequestID, listResp.OpcRequestId)
+		if err != nil {
+			result.ErrorCode = "OCI_LIST_IPV6_FAILED"
+			result.ErrorMessage = err.Error()
+			return result
+		}
+		for _, item := range listResp.Items {
+			ipv6ID := stringValue(item.Id)
+			if ipv6ID == "" {
+				continue
+			}
+			deleteResp, err := clients.VirtualNetwork.DeleteIpv6(ctx, core.DeleteIpv6Request{
+				Ipv6Id:       common.String(ipv6ID),
+				OpcRequestId: requestID("codex-delete-ipv6", req.JobID),
+			})
+			appendFirstRequestID(&result.RequestID, deleteResp.OpcRequestId)
+			if err != nil {
+				result.ErrorCode = "OCI_DELETE_IPV6_FAILED"
+				result.ErrorMessage = err.Error()
+				return result
+			}
+			result.DeletedIPv6IDs = append(result.DeletedIPv6IDs, ipv6ID)
+			if address := stringValue(item.IpAddress); address != "" {
+				result.DeletedIPv6Addresses = append(result.DeletedIPv6Addresses, address)
+			}
+		}
+		if listResp.OpcNextPage == nil || *listResp.OpcNextPage == "" {
+			break
+		}
+		page = *listResp.OpcNextPage
+	}
+	result.Noop = len(result.DeletedIPv6IDs) == 0
+	result.Verified = true
+	return result
+}
+
 func resolveVNIC(ctx context.Context, clients Clients, compartmentID string, instanceID string, requestedVNICID string, requestID *string) (core.Vnic, error) {
 	requestedVNICID = strings.TrimSpace(requestedVNICID)
 	if strings.HasPrefix(requestedVNICID, "ocid1.vnic.") {
@@ -270,6 +326,13 @@ func resolveVNIC(ctx context.Context, clients Clients, compartmentID string, ins
 		return fallback, nil
 	}
 	return core.Vnic{}, fmt.Errorf("no attached VNIC found for instance %s", instanceID)
+}
+
+func optionalString(value string) *string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return common.String(value)
 }
 
 func firstSubnetIPv6CIDR(subnet core.Subnet) string {

@@ -207,3 +207,27 @@ npm run build
 - Instance Configuration / Instance Pool / Autoscaling。
 - RBAC 多用户、审批流、预算护栏。
 - Automation repository 与调度器。
+
+## 2026-06-13 预算治理增量更新
+
+已新增落地：
+
+- 平台治理下新增“预算管理”入口。
+- 新增 Web 预算管理页面，展示预算阈值、实际/预测用量、动作模式、降配预设、预算熔断和安全护栏。
+- 新增 `docs/budget-management-implementation.md`，定义 BudgetPolicy、BudgetEvaluation、BudgetCandidate、候选筛选、自动降配、超预算删机和阶段化测试方案。
+
+仍需后端落地：
+
+- BudgetPolicy CRUD 和持久化。
+- OCI Budgets API 同步。
+- Cost Usage / Cost Reports 采集。
+- Budget Evaluator 定时评估器。
+- 候选实例 dry-run API。
+- 自动降配执行器与预算熔断删机执行器。
+- 审批流、审计过滤和真实 OCI 专项验证。
+
+新增已实现，待真实 OCI 专项验证：
+
+- 创建实例页切换 Shape、AD、Compartment、VCN 时会自动刷新 Launch Options；Shape 变化会刷新兼容 Image 列表，避免旧镜像与新 Shape 不兼容。
+- 创建实例页预算估算已显示明确状态：免费额度、已估算、粗估、等待启动盘用量、价格未接入。
+- 仍需接统一后端价格表，替代前端临时估算；未知 Shape 必须继续显示“价格未接入”原因。

@@ -37,6 +37,7 @@ type Store struct {
 	webhookSettings    domain.WebhookSettings
 	accountSettings    domain.AccountSettings
 	appearanceSettings domain.AppearanceSettings
+	budgetSettings     domain.BudgetSettings
 }
 
 type PersistenceSink interface {
@@ -63,6 +64,7 @@ type settingsSink interface {
 	SaveWebhookSettings(settings domain.WebhookSettings) error
 	SaveAccountSettings(settings domain.AccountSettings) error
 	SaveAppearanceSettings(settings domain.AppearanceSettings) error
+	SaveBudgetSettings(settings domain.BudgetSettings) error
 }
 
 type settingsReader interface {
@@ -70,6 +72,7 @@ type settingsReader interface {
 	GetWebhookSettings() (domain.WebhookSettings, error)
 	GetAccountSettings() (domain.AccountSettings, error)
 	GetAppearanceSettings() (domain.AppearanceSettings, error)
+	GetBudgetSettings() (domain.BudgetSettings, error)
 }
 
 func New() *Store {
@@ -93,6 +96,22 @@ func New() *Store {
 		appearanceSettings: domain.AppearanceSettings{
 			Theme:          "light",
 			BackgroundMode: "aurora",
+			Language:       "zh-CN",
+		},
+		budgetSettings: domain.BudgetSettings{
+			MonthlyBudgetUSD: 10,
+			ActualSpendUSD:   0,
+			ForecastSpendUSD: 0,
+			ThresholdPercent: 90,
+			ScopeMode:        "tag",
+			ProfileID:        "DEFAULT",
+			Region:           "ap-chuncheon-1",
+			CompartmentID:    "Root tenancy",
+			TagKey:           "budget.autoAction",
+			TagValue:         "enabled",
+			ActionMode:       "downgrade",
+			DowngradePreset:  "free-first",
+			RequireApproval:  true,
 		},
 	}
 }
@@ -909,6 +928,43 @@ func (s *Store) SetAppearanceSettings(settings domain.AppearanceSettings) (domai
 	return s.appearanceSettings, nil
 }
 
+func (s *Store) GetBudgetSettings() domain.BudgetSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return normalizeBudgetSettings(s.budgetSettings, s.now())
+}
+
+func (s *Store) SetBudgetSettings(settings domain.BudgetSettings) (domain.BudgetSettings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	next := normalizeBudgetSettings(settings, s.now())
+	next.UpdatedAt = s.now().UTC()
+	s.budgetSettings = next
+	if sink, ok := s.sink.(settingsSink); ok {
+		if err := sink.SaveBudgetSettings(s.budgetSettings); err != nil {
+			return domain.BudgetSettings{}, err
+		}
+	}
+	_ = s.recordAuditLocked(domain.AuditLog{
+		Actor:        "admin",
+		Action:       "settings.budget.updated",
+		ResourceType: "settings",
+		ResourceID:   "budget",
+		RequestPayload: map[string]any{
+			"enabled":           next.Enabled,
+			"monthlyBudgetUsd":  next.MonthlyBudgetUSD,
+			"thresholdPercent":  next.ThresholdPercent,
+			"scopeMode":         next.ScopeMode,
+			"manualInstanceIds": len(next.ManualInstanceIDs),
+			"actionMode":        next.ActionMode,
+			"requireApproval":   next.RequireApproval,
+		},
+		CreatedAt: s.now().UTC(),
+	})
+	return s.budgetSettings, nil
+}
+
 func (s *Store) LoadPersistedSettings() error {
 	s.mu.RLock()
 	reader, ok := s.sink.(settingsReader)
@@ -932,6 +988,10 @@ func (s *Store) LoadPersistedSettings() error {
 	if err != nil {
 		return err
 	}
+	budgetSettings, err := reader.GetBudgetSettings()
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	if emailSettings.Host != "" || emailSettings.Enabled || emailSettings.PasswordSet {
 		s.emailSettings = emailSettings
@@ -944,6 +1004,9 @@ func (s *Store) LoadPersistedSettings() error {
 	}
 	if appearanceSettings.Theme != "" || appearanceSettings.BackgroundMode != "" || appearanceSettings.BackgroundImage != "" {
 		s.appearanceSettings = normalizeAppearanceSettings(appearanceSettings)
+	}
+	if budgetSettings.MonthlyBudgetUSD > 0 || budgetSettings.Enabled || budgetSettings.ScopeMode != "" {
+		s.budgetSettings = normalizeBudgetSettings(budgetSettings, s.now())
 	}
 	s.mu.Unlock()
 	return nil
@@ -1205,8 +1268,8 @@ func (s *Store) CreateOCIIPTask(instanceID string, req domain.IPTaskRequest, act
 	if !strings.HasPrefix(instanceID, "ocid1.instance.") {
 		return domain.Job{}, fmt.Errorf("%w: instance id must be an OCI instance OCID", ErrValidation)
 	}
-	if strings.TrimSpace(req.Mode) == "" && !req.EnableIPv6 {
-		return domain.Job{}, fmt.Errorf("%w: mode or enableIpv6 is required", ErrValidation)
+	if strings.TrimSpace(req.Mode) == "" && !req.EnableIPv6 && !req.DisableIPv6 {
+		return domain.Job{}, fmt.Errorf("%w: mode, enableIpv6, or disableIpv6 is required", ErrValidation)
 	}
 
 	s.mu.Lock()
@@ -1232,6 +1295,7 @@ func (s *Store) CreateOCIIPTask(instanceID string, req domain.IPTaskRequest, act
 		"vnicId":                   req.VNICID,
 		"note":                     req.Note,
 		"enableIpv6":               req.EnableIPv6,
+		"disableIpv6":              req.DisableIPv6,
 		"autoConfigureIpv6":        req.AutoConfigureIPv6,
 		"ipv6Strategy":             defaultString(req.IPv6Strategy, "assign_only"),
 		"networkChangeMode":        defaultString(req.NetworkChangeMode, req.IPv6Strategy),
@@ -1246,6 +1310,49 @@ func (s *Store) CreateOCIIPTask(instanceID string, req domain.IPTaskRequest, act
 		"snapshotBefore":           req.SnapshotBefore,
 		"ociInstanceId":            instanceID,
 		"executionMode":            "oci",
+	}
+	return s.saveJobLocked(job)
+}
+
+func (s *Store) CreatePublicIPBatchTask(req domain.PublicIPBatchTaskRequest, actor string) (domain.Job, error) {
+	action := strings.ToLower(strings.TrimSpace(req.Action))
+	if action != "create" && action != "delete" {
+		return domain.Job{}, fmt.Errorf("%w: action must be create or delete", ErrValidation)
+	}
+	if action == "create" {
+		if req.Count <= 0 {
+			return domain.Job{}, fmt.Errorf("%w: count must be greater than zero", ErrValidation)
+		}
+		if req.Count > 50 {
+			return domain.Job{}, fmt.Errorf("%w: count cannot exceed 50 per batch", ErrValidation)
+		}
+	} else if len(cleanStringList(req.PublicIPIDs)) == 0 {
+		return domain.Job{}, fmt.Errorf("%w: publicIpIds is required for delete", ErrValidation)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	profileID := defaultString(req.ProfileID, "DEFAULT")
+	region := strings.TrimSpace(req.Region)
+	if profile, ok := s.profileByIDOrNameLocked(profileID); ok {
+		profileID = profile.ID
+		if region == "" {
+			region = profile.DefaultRegion
+		}
+	}
+	job := s.newJobLocked("批量公网 IP", "network", "reserved-public-ip", actor)
+	job.ProfileID = profileID
+	job.Region = region
+	job.CompartmentID = strings.TrimSpace(req.CompartmentID)
+	job.MaxRetries = 1
+	job.Input = map[string]any{
+		"operation":     "public-ip-batch",
+		"action":        action,
+		"count":         req.Count,
+		"displayPrefix": strings.TrimSpace(req.DisplayPrefix),
+		"publicIpIds":   cleanStringList(req.PublicIPIDs),
+		"note":          strings.TrimSpace(req.Note),
 	}
 	return s.saveJobLocked(job)
 }
@@ -1278,11 +1385,15 @@ func (s *Store) CreateInstanceActionTask(instanceID string, req domain.InstanceA
 		if strings.TrimSpace(req.TargetShape) == "" {
 			return domain.Job{}, fmt.Errorf("%w: targetShape is required", ErrValidation)
 		}
-		if req.TargetOCPUs <= 0 {
+		targetIsFlexible := isFlexibleShapeName(req.TargetShape)
+		if targetIsFlexible && req.TargetOCPUs <= 0 {
 			return domain.Job{}, fmt.Errorf("%w: targetOcpus must be greater than zero", ErrValidation)
 		}
-		if req.TargetMemoryGB <= 0 {
+		if targetIsFlexible && req.TargetMemoryGB <= 0 {
 			return domain.Job{}, fmt.Errorf("%w: targetMemoryGb must be greater than zero", ErrValidation)
+		}
+		if req.TargetBootVolumeGB > 0 && instance.BootVolumeGB > 0 && req.TargetBootVolumeGB < instance.BootVolumeGB {
+			return domain.Job{}, fmt.Errorf("%w: boot volume cannot be decreased", ErrValidation)
 		}
 		if req.ExpandBootVolume {
 			if req.TargetBootVolumeGB <= 0 {
@@ -1292,6 +1403,9 @@ func (s *Store) CreateInstanceActionTask(instanceID string, req domain.InstanceA
 				return domain.Job{}, fmt.Errorf("%w: boot volume cannot be decreased", ErrValidation)
 			}
 		}
+		if req.TargetBootVolumeVPUsPerGB != 0 && !validBootVolumeVPUs(req.TargetBootVolumeVPUsPerGB) {
+			return domain.Job{}, fmt.Errorf("%w: targetBootVolumeVpusPerGb must be between 10 and 120", ErrValidation)
+		}
 	}
 
 	job := s.newJobLocked(instanceActionJobType(req.Action), "instance", instance.ID, actor)
@@ -1300,22 +1414,24 @@ func (s *Store) CreateInstanceActionTask(instanceID string, req domain.InstanceA
 	job.CompartmentID = instance.CompartmentID
 	job.MaxRetries = 1
 	job.Input = map[string]any{
-		"action":              string(req.Action),
-		"graceful":            req.Graceful,
-		"preserveBootVolume":  req.PreserveBootVolume,
-		"targetShape":         req.TargetShape,
-		"targetOcpus":         req.TargetOCPUs,
-		"targetMemoryGb":      req.TargetMemoryGB,
-		"targetBootVolumeGb":  req.TargetBootVolumeGB,
-		"expandBootVolume":    req.ExpandBootVolume,
-		"currentBootVolumeGb": instance.BootVolumeGB,
-		"snapshotBefore":      req.SnapshotBefore,
-		"note":                req.Note,
-		"instanceName":        instance.Name,
-		"currentStatus":       instance.Status,
-		"currentShape":        instance.Shape,
-		"currentOcpus":        instance.OCPUs,
-		"currentMemoryGb":     instance.MemoryGB,
+		"action":                     string(req.Action),
+		"graceful":                   req.Graceful,
+		"preserveBootVolume":         req.PreserveBootVolume,
+		"targetShape":                req.TargetShape,
+		"targetOcpus":                req.TargetOCPUs,
+		"targetMemoryGb":             req.TargetMemoryGB,
+		"targetBootVolumeGb":         req.TargetBootVolumeGB,
+		"targetBootVolumeVpusPerGb":  req.TargetBootVolumeVPUsPerGB,
+		"expandBootVolume":           req.ExpandBootVolume,
+		"currentBootVolumeGb":        instance.BootVolumeGB,
+		"currentBootVolumeVpusPerGb": defaultInt(instance.BootVolumeVPUsPerGB, 10),
+		"snapshotBefore":             req.SnapshotBefore,
+		"note":                       req.Note,
+		"instanceName":               instance.Name,
+		"currentStatus":              instance.Status,
+		"currentShape":               instance.Shape,
+		"currentOcpus":               instance.OCPUs,
+		"currentMemoryGb":            instance.MemoryGB,
 	}
 	if req.Action == domain.InstanceActionTerminate {
 		instance.Status = domain.InstanceTerminating
@@ -1342,6 +1458,12 @@ func (s *Store) CreateOCIInstanceLaunchTask(req domain.CreateInstanceRequest, ac
 	}
 	if req.BootVolumeGB <= 0 {
 		req.BootVolumeGB = 50
+	}
+	if req.BootVolumeVPUsPerGB == 0 {
+		req.BootVolumeVPUsPerGB = 10
+	}
+	if !validBootVolumeVPUs(req.BootVolumeVPUsPerGB) {
+		return domain.Job{}, fmt.Errorf("%w: bootVolumeVpusPerGb must be between 10 and 120", ErrValidation)
 	}
 	if req.MaxRetries < 0 {
 		return domain.Job{}, fmt.Errorf("%w: maxRetries cannot be negative", ErrValidation)
@@ -1379,6 +1501,7 @@ func (s *Store) CreateOCIInstanceLaunchTask(req domain.CreateInstanceRequest, ac
 		"ocpus":                req.OCPUs,
 		"memoryGb":             req.MemoryGB,
 		"bootVolumeGb":         req.BootVolumeGB,
+		"bootVolumeVpusPerGb":  defaultInt(req.BootVolumeVPUsPerGB, 10),
 		"assignPublicIp":       req.AssignPublicIP,
 		"enableIpv6":           req.EnableIPv6,
 		"reservedPublicIp":     req.ReservedPublicIP,
@@ -1415,19 +1538,30 @@ func (s *Store) CreateOCIInstanceActionTask(instanceID string, req domain.Instan
 		if strings.TrimSpace(req.TargetShape) == "" {
 			return domain.Job{}, fmt.Errorf("%w: targetShape is required", ErrValidation)
 		}
-		if req.TargetOCPUs <= 0 {
+		targetIsFlexible := isFlexibleShapeName(req.TargetShape)
+		if targetIsFlexible && req.TargetOCPUs <= 0 {
 			return domain.Job{}, fmt.Errorf("%w: targetOcpus must be greater than zero", ErrValidation)
 		}
-		if req.TargetMemoryGB <= 0 {
+		if targetIsFlexible && req.TargetMemoryGB <= 0 {
 			return domain.Job{}, fmt.Errorf("%w: targetMemoryGb must be greater than zero", ErrValidation)
 		}
-		if req.ExpandBootVolume && req.TargetBootVolumeGB <= 0 {
-			return domain.Job{}, fmt.Errorf("%w: targetBootVolumeGb must be greater than zero", ErrValidation)
+		if req.ExpandBootVolume {
+			if req.TargetBootVolumeGB <= 0 {
+				return domain.Job{}, fmt.Errorf("%w: targetBootVolumeGb must be greater than zero", ErrValidation)
+			}
+		}
+		if req.TargetBootVolumeVPUsPerGB != 0 && !validBootVolumeVPUs(req.TargetBootVolumeVPUsPerGB) {
+			return domain.Job{}, fmt.Errorf("%w: targetBootVolumeVpusPerGb must be between 10 and 120", ErrValidation)
 		}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if req.Action == domain.InstanceActionResize {
+		if instance, ok := s.instances[instanceID]; ok && req.TargetBootVolumeGB > 0 && instance.BootVolumeGB > 0 && req.TargetBootVolumeGB < instance.BootVolumeGB {
+			return domain.Job{}, fmt.Errorf("%w: boot volume cannot be decreased", ErrValidation)
+		}
+	}
 
 	job := s.newJobLocked(instanceActionJobType(req.Action), "instance", instanceID, actor)
 	profileID = defaultString(profileID, "DEFAULT")
@@ -1442,18 +1576,19 @@ func (s *Store) CreateOCIInstanceActionTask(instanceID string, req domain.Instan
 	job.CompartmentID = compartmentID
 	job.MaxRetries = 0
 	job.Input = map[string]any{
-		"action":             string(req.Action),
-		"graceful":           req.Graceful,
-		"preserveBootVolume": req.PreserveBootVolume,
-		"targetShape":        req.TargetShape,
-		"targetOcpus":        req.TargetOCPUs,
-		"targetMemoryGb":     req.TargetMemoryGB,
-		"targetBootVolumeGb": req.TargetBootVolumeGB,
-		"expandBootVolume":   req.ExpandBootVolume,
-		"snapshotBefore":     req.SnapshotBefore,
-		"note":               req.Note,
-		"ociInstanceId":      instanceID,
-		"executionMode":      "oci",
+		"action":                    string(req.Action),
+		"graceful":                  req.Graceful,
+		"preserveBootVolume":        req.PreserveBootVolume,
+		"targetShape":               req.TargetShape,
+		"targetOcpus":               req.TargetOCPUs,
+		"targetMemoryGb":            req.TargetMemoryGB,
+		"targetBootVolumeGb":        req.TargetBootVolumeGB,
+		"targetBootVolumeVpusPerGb": req.TargetBootVolumeVPUsPerGB,
+		"expandBootVolume":          req.ExpandBootVolume,
+		"snapshotBefore":            req.SnapshotBefore,
+		"note":                      req.Note,
+		"ociInstanceId":             instanceID,
+		"executionMode":             "oci",
 	}
 	if req.Action == domain.InstanceActionTerminate {
 		if instance, ok := s.instances[instanceID]; ok {
@@ -1482,6 +1617,12 @@ func (s *Store) CreateInstanceTask(req domain.CreateInstanceRequest, actor strin
 	}
 	if req.BootVolumeGB <= 0 {
 		req.BootVolumeGB = 50
+	}
+	if req.BootVolumeVPUsPerGB == 0 {
+		req.BootVolumeVPUsPerGB = 10
+	}
+	if !validBootVolumeVPUs(req.BootVolumeVPUsPerGB) {
+		return domain.CreateInstanceResponse{}, fmt.Errorf("%w: bootVolumeVpusPerGb must be between 10 and 120", ErrValidation)
 	}
 	if strings.TrimSpace(req.TemplateID) != "" {
 		template, ok := s.templates[req.TemplateID]
@@ -1514,23 +1655,24 @@ func (s *Store) CreateInstanceTask(req domain.CreateInstanceRequest, actor strin
 
 	now := s.now().UTC()
 	instance := domain.Instance{
-		ID:            s.nextInstanceIDLocked(req.Name),
-		Name:          req.Name,
-		Created:       "刚刚创建",
-		Shape:         req.Shape,
-		Region:        strings.TrimSpace(req.Region),
-		Compartment:   strings.TrimSpace(req.Compartment),
-		PrimaryIP:     "-",
-		PrivateIP:     fmt.Sprintf("10.0.%d.%d", s.nextInst, 20+s.nextInst),
-		OCPUs:         req.OCPUs,
-		MemoryGB:      req.MemoryGB,
-		BootVolumeGB:  req.BootVolumeGB,
-		Status:        domain.InstanceProvisioning,
-		Protected:     req.RequireApproval,
-		OCIInstanceID: "",
-		ProfileID:     profileID,
-		CompartmentID: strings.TrimSpace(req.CompartmentID),
-		LastSyncedAt:  now,
+		ID:                  s.nextInstanceIDLocked(req.Name),
+		Name:                req.Name,
+		Created:             "刚刚创建",
+		Shape:               req.Shape,
+		Region:              strings.TrimSpace(req.Region),
+		Compartment:         strings.TrimSpace(req.Compartment),
+		PrimaryIP:           "-",
+		PrivateIP:           fmt.Sprintf("10.0.%d.%d", s.nextInst, 20+s.nextInst),
+		OCPUs:               req.OCPUs,
+		MemoryGB:            req.MemoryGB,
+		BootVolumeGB:        req.BootVolumeGB,
+		BootVolumeVPUsPerGB: req.BootVolumeVPUsPerGB,
+		Status:              domain.InstanceProvisioning,
+		Protected:           req.RequireApproval,
+		OCIInstanceID:       "",
+		ProfileID:           profileID,
+		CompartmentID:       strings.TrimSpace(req.CompartmentID),
+		LastSyncedAt:        now,
 	}
 	if req.AssignPublicIP {
 		instance.PrimaryIP = fmt.Sprintf("203.0.113.%d", 20+s.nextInst)
@@ -1557,6 +1699,7 @@ func (s *Store) CreateInstanceTask(req domain.CreateInstanceRequest, actor strin
 		"ocpus":                req.OCPUs,
 		"memoryGb":             req.MemoryGB,
 		"bootVolumeGb":         req.BootVolumeGB,
+		"bootVolumeVpusPerGb":  req.BootVolumeVPUsPerGB,
 		"assignPublicIp":       req.AssignPublicIP,
 		"enableIpv6":           req.EnableIPv6,
 		"reservedPublicIp":     req.ReservedPublicIP,
@@ -1734,23 +1877,24 @@ func instanceFromLaunchJob(job domain.Job, result map[string]any, syncedAt time.
 	}
 	status := statusFromOCIState(stringFromMap(result, "finalState"), domain.InstanceRunning)
 	return domain.Instance{
-		ID:            instanceID,
-		Name:          defaultString(stringFromMap(result, "displayName"), stringFromMap(job.Input, "name")),
-		Created:       syncedAt.Format(time.RFC3339),
-		Shape:         defaultString(stringFromMap(result, "shape"), stringFromMap(job.Input, "shape")),
-		Region:        defaultString(job.Region, stringFromMap(job.Input, "region")),
-		Compartment:   defaultString(stringFromMap(job.Input, "compartment"), defaultString(stringFromMap(result, "compartmentId"), job.CompartmentID)),
-		PrimaryIP:     "",
-		PrivateIP:     "",
-		OCPUs:         defaultInt(intFromMap(result, "ocpus"), intFromMap(job.Input, "ocpus")),
-		MemoryGB:      defaultInt(intFromMap(result, "memoryGb"), intFromMap(job.Input, "memoryGb")),
-		BootVolumeGB:  defaultInt(intFromMap(result, "bootVolumeGb"), intFromMap(job.Input, "bootVolumeGb")),
-		Status:        status,
-		Protected:     boolFromMap(job.Input, "requireApproval"),
-		OCIInstanceID: instanceID,
-		ProfileID:     defaultString(job.ProfileID, stringFromMap(job.Input, "profileId")),
-		CompartmentID: defaultString(stringFromMap(result, "compartmentId"), job.CompartmentID),
-		LastSyncedAt:  syncedAt,
+		ID:                  instanceID,
+		Name:                defaultString(stringFromMap(result, "displayName"), stringFromMap(job.Input, "name")),
+		Created:             syncedAt.Format(time.RFC3339),
+		Shape:               defaultString(stringFromMap(result, "shape"), stringFromMap(job.Input, "shape")),
+		Region:              defaultString(job.Region, stringFromMap(job.Input, "region")),
+		Compartment:         defaultString(stringFromMap(job.Input, "compartment"), defaultString(stringFromMap(result, "compartmentId"), job.CompartmentID)),
+		PrimaryIP:           "",
+		PrivateIP:           "",
+		OCPUs:               defaultInt(intFromMap(result, "ocpus"), intFromMap(job.Input, "ocpus")),
+		MemoryGB:            defaultInt(intFromMap(result, "memoryGb"), intFromMap(job.Input, "memoryGb")),
+		BootVolumeGB:        defaultInt(intFromMap(result, "bootVolumeGb"), intFromMap(job.Input, "bootVolumeGb")),
+		BootVolumeVPUsPerGB: defaultInt(intFromMap(result, "bootVolumeVpusPerGb"), defaultInt(intFromMap(job.Input, "bootVolumeVpusPerGb"), 10)),
+		Status:              status,
+		Protected:           boolFromMap(job.Input, "requireApproval"),
+		OCIInstanceID:       instanceID,
+		ProfileID:           defaultString(job.ProfileID, stringFromMap(job.Input, "profileId")),
+		CompartmentID:       defaultString(stringFromMap(result, "compartmentId"), job.CompartmentID),
+		LastSyncedAt:        syncedAt,
 	}
 }
 
@@ -1863,6 +2007,9 @@ func applyInstanceAction(instance *domain.Instance, action string, input map[str
 		if bootVolumeGB, ok := intFromAny(input["targetBootVolumeGb"]); ok && bootVolumeGB > instance.BootVolumeGB {
 			instance.BootVolumeGB = bootVolumeGB
 		}
+		if bootVolumeVPUsPerGB, ok := intFromAny(input["targetBootVolumeVpusPerGb"]); ok && bootVolumeVPUsPerGB > 0 {
+			instance.BootVolumeVPUsPerGB = bootVolumeVPUsPerGB
+		}
 		instance.Status = domain.InstanceRunning
 	}
 }
@@ -1953,6 +2100,10 @@ func defaultInt(value, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+func validBootVolumeVPUs(value int) bool {
+	return value >= 10 && value <= 120
 }
 
 func launchRegions(profiles []domain.Profile, templates []domain.InstanceTemplate) []domain.LaunchOption {
@@ -2219,7 +2370,89 @@ func normalizeAppearanceSettings(settings domain.AppearanceSettings) domain.Appe
 	if settings.BackgroundMode != "image" {
 		settings.BackgroundImage = ""
 	}
+	switch strings.TrimSpace(settings.Language) {
+	case "en-US":
+		settings.Language = "en-US"
+	default:
+		settings.Language = "zh-CN"
+	}
 	return settings
+}
+
+func normalizeBudgetSettings(settings domain.BudgetSettings, now time.Time) domain.BudgetSettings {
+	if settings.MonthlyBudgetUSD <= 0 {
+		settings.MonthlyBudgetUSD = 10
+	}
+	if settings.ThresholdPercent <= 0 {
+		settings.ThresholdPercent = 90
+	}
+	settings.ActualSpendUSD = maxFloat(0, settings.ActualSpendUSD)
+	settings.ForecastSpendUSD = maxFloat(0, settings.ForecastSpendUSD)
+	settings.ScopeMode = strings.ToLower(strings.TrimSpace(settings.ScopeMode))
+	switch settings.ScopeMode {
+	case "tag", "compartment", "pool", "manual":
+	default:
+		settings.ScopeMode = "tag"
+	}
+	settings.ProfileID = strings.TrimSpace(settings.ProfileID)
+	settings.Region = strings.TrimSpace(settings.Region)
+	settings.CompartmentID = strings.TrimSpace(settings.CompartmentID)
+	settings.ResourcePool = strings.TrimSpace(settings.ResourcePool)
+	settings.TagKey = strings.TrimSpace(settings.TagKey)
+	settings.TagValue = strings.TrimSpace(settings.TagValue)
+	settings.ManualInstanceIDs = cleanStringList(settings.ManualInstanceIDs)
+	settings.ActionMode = strings.ToLower(strings.TrimSpace(settings.ActionMode))
+	switch settings.ActionMode {
+	case "notify", "downgrade", "delete":
+	default:
+		settings.ActionMode = "downgrade"
+	}
+	settings.DowngradePreset = strings.ToLower(strings.TrimSpace(settings.DowngradePreset))
+	switch settings.DowngradePreset {
+	case "free-first", "min-flex", "custom", "stop-only":
+	default:
+		settings.DowngradePreset = "free-first"
+	}
+	if settings.ProfileID == "" {
+		settings.ProfileID = "DEFAULT"
+	}
+	if settings.TagKey == "" {
+		settings.TagKey = "budget.autoAction"
+	}
+	if settings.TagValue == "" {
+		settings.TagValue = "enabled"
+	}
+	if settings.UpdatedAt.IsZero() && !now.IsZero() {
+		settings.UpdatedAt = now.UTC()
+	}
+	return settings
+}
+
+func cleanStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" || seen[strings.ToLower(part)] {
+				continue
+			}
+			seen[strings.ToLower(part)] = true
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func maxFloat(minValue float64, value float64) float64 {
+	if value < minValue {
+		return minValue
+	}
+	return value
+}
+
+func isFlexibleShapeName(shape string) bool {
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(shape)), ".flex")
 }
 
 func cleanRecipients(values []string) []string {

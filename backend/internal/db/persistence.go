@@ -181,16 +181,20 @@ func (s *PostgresSink) SaveInstance(instance domain.Instance) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ipv6Addresses, err := json.Marshal(instance.IPv6Addresses)
+	if err != nil {
+		return err
+	}
 
-	_, err := s.conn.ExecContext(ctx, `
+	_, err = s.conn.ExecContext(ctx, `
 INSERT INTO instances (
   id, oci_instance_id, profile_id, name, shape, region, compartment, compartment_id,
-  primary_ip, private_ip, ocpus, memory_gb, boot_volume_gb, status, protected,
+  primary_ip, private_ip, primary_ipv6, ipv6_addresses, ocpus, memory_gb, boot_volume_gb, boot_volume_vpus_per_gb, status, protected,
   reserved_ip_name, created_label, last_synced_at
 ) VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8,
-  $9, $10, $11, $12, $13, $14, $15,
-  $16, $17, $18
+  $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+  $19, $20, $21
 )
 ON CONFLICT (id) DO UPDATE SET
   oci_instance_id = EXCLUDED.oci_instance_id,
@@ -202,9 +206,12 @@ ON CONFLICT (id) DO UPDATE SET
   compartment_id = EXCLUDED.compartment_id,
   primary_ip = EXCLUDED.primary_ip,
   private_ip = EXCLUDED.private_ip,
+  primary_ipv6 = EXCLUDED.primary_ipv6,
+  ipv6_addresses = EXCLUDED.ipv6_addresses,
   ocpus = EXCLUDED.ocpus,
   memory_gb = EXCLUDED.memory_gb,
   boot_volume_gb = EXCLUDED.boot_volume_gb,
+  boot_volume_vpus_per_gb = EXCLUDED.boot_volume_vpus_per_gb,
   status = EXCLUDED.status,
   protected = EXCLUDED.protected,
   reserved_ip_name = EXCLUDED.reserved_ip_name,
@@ -221,9 +228,12 @@ ON CONFLICT (id) DO UPDATE SET
 		instance.CompartmentID,
 		instance.PrimaryIP,
 		instance.PrivateIP,
+		instance.PrimaryIPv6,
+		ipv6Addresses,
 		instance.OCPUs,
 		instance.MemoryGB,
 		instance.BootVolumeGB,
+		defaultInt(instance.BootVolumeVPUsPerGB, 10),
 		string(instance.Status),
 		instance.Protected,
 		nullableString(instance.ReservedIPName),
@@ -242,7 +252,7 @@ func (s *PostgresSink) ListInstances(status string) ([]domain.Instance, error) {
 
 	query := `
 SELECT id, oci_instance_id, profile_id, name, shape, region, compartment, compartment_id,
-       primary_ip, private_ip, ocpus, memory_gb, boot_volume_gb, status, protected,
+       primary_ip, private_ip, primary_ipv6, ipv6_addresses, ocpus, memory_gb, boot_volume_gb, boot_volume_vpus_per_gb, status, protected,
        reserved_ip_name, created_label, last_synced_at
 FROM instances`
 	args := []any{}
@@ -263,6 +273,7 @@ FROM instances`
 		var instance domain.Instance
 		var ociInstanceID, reservedIPName sql.NullString
 		var lastSyncedAt sql.NullTime
+		var ipv6Addresses []byte
 		var statusValue string
 		if err := rows.Scan(
 			&instance.ID,
@@ -275,9 +286,12 @@ FROM instances`
 			&instance.CompartmentID,
 			&instance.PrimaryIP,
 			&instance.PrivateIP,
+			&instance.PrimaryIPv6,
+			&ipv6Addresses,
 			&instance.OCPUs,
 			&instance.MemoryGB,
 			&instance.BootVolumeGB,
+			&instance.BootVolumeVPUsPerGB,
 			&statusValue,
 			&instance.Protected,
 			&reservedIPName,
@@ -287,6 +301,13 @@ FROM instances`
 			return nil, err
 		}
 		instance.Status = domain.InstanceStatus(statusValue)
+		if len(ipv6Addresses) > 0 {
+			_ = json.Unmarshal(ipv6Addresses, &instance.IPv6Addresses)
+		}
+		if instance.PrimaryIPv6 == "" && len(instance.IPv6Addresses) > 0 {
+			instance.PrimaryIPv6 = instance.IPv6Addresses[0]
+		}
+		instance.IPv6Enabled = len(instance.IPv6Addresses) > 0
 		if ociInstanceID.Valid {
 			instance.OCIInstanceID = ociInstanceID.String
 		}
@@ -655,6 +676,18 @@ func (s *PostgresSink) GetAppearanceSettings() (domain.AppearanceSettings, error
 	return settings, nil
 }
 
+func (s *PostgresSink) SaveBudgetSettings(settings domain.BudgetSettings) error {
+	return s.saveSetting("budget", settings)
+}
+
+func (s *PostgresSink) GetBudgetSettings() (domain.BudgetSettings, error) {
+	var settings domain.BudgetSettings
+	if err := s.getSetting("budget", &settings); err != nil {
+		return domain.BudgetSettings{}, err
+	}
+	return settings, nil
+}
+
 func (s *PostgresSink) saveSetting(key string, value any) error {
 	if s == nil || s.conn == nil {
 		return ErrNotConfigured()
@@ -773,6 +806,13 @@ func profileEncryptionKey(secret string) ([]byte, error) {
 		return []byte(secret), nil
 	}
 	return nil, fmt.Errorf("PROFILE_KEY_ENCRYPTION_KEY must be exactly 32 bytes or a base64 encoded 32-byte key")
+}
+
+func defaultInt(value int, fallback int) int {
+	if value == 0 {
+		return fallback
+	}
+	return value
 }
 
 func (e *profileEncryptor) encrypt(plaintext []byte) ([]byte, error) {

@@ -14,48 +14,50 @@ import (
 )
 
 type LaunchExecutionResult struct {
-	Verified           bool      `json:"verified"`
-	ExecutionMode      string    `json:"executionMode"`
-	CompartmentID      string    `json:"compartmentId"`
-	AvailabilityDomain string    `json:"availabilityDomain,omitempty"`
-	SubnetID           string    `json:"subnetId,omitempty"`
-	ImageID            string    `json:"imageId,omitempty"`
-	DisplayName        string    `json:"displayName,omitempty"`
-	InstanceID         string    `json:"instanceId,omitempty"`
-	Shape              string    `json:"shape"`
-	OCPUs              int       `json:"ocpus"`
-	MemoryGB           int       `json:"memoryGb"`
-	BootVolumeGB       int       `json:"bootVolumeGb"`
-	AssignPublicIP     bool      `json:"assignPublicIp"`
-	EnableIPv6         bool      `json:"enableIpv6"`
-	ReservedPublicIP   string    `json:"reservedPublicIp,omitempty"`
-	ReservedPublicIPID string    `json:"reservedPublicIpId,omitempty"`
-	PrimaryVNICID      string    `json:"primaryVnicId,omitempty"`
-	PrimaryPrivateIPID string    `json:"primaryPrivateIpId,omitempty"`
-	PublicIPv4         string    `json:"publicIpv4,omitempty"`
-	RequestID          string    `json:"requestId,omitempty"`
-	WorkRequestID      string    `json:"workRequestId,omitempty"`
-	FinalState         string    `json:"finalState,omitempty"`
-	ErrorCode          string    `json:"errorCode,omitempty"`
-	ErrorMessage       string    `json:"errorMessage,omitempty"`
-	ExecutedAt         time.Time `json:"executedAt"`
+	Verified            bool      `json:"verified"`
+	ExecutionMode       string    `json:"executionMode"`
+	CompartmentID       string    `json:"compartmentId"`
+	AvailabilityDomain  string    `json:"availabilityDomain,omitempty"`
+	SubnetID            string    `json:"subnetId,omitempty"`
+	ImageID             string    `json:"imageId,omitempty"`
+	DisplayName         string    `json:"displayName,omitempty"`
+	InstanceID          string    `json:"instanceId,omitempty"`
+	Shape               string    `json:"shape"`
+	OCPUs               int       `json:"ocpus"`
+	MemoryGB            int       `json:"memoryGb"`
+	BootVolumeGB        int       `json:"bootVolumeGb"`
+	BootVolumeVPUsPerGB int       `json:"bootVolumeVpusPerGb"`
+	AssignPublicIP      bool      `json:"assignPublicIp"`
+	EnableIPv6          bool      `json:"enableIpv6"`
+	ReservedPublicIP    string    `json:"reservedPublicIp,omitempty"`
+	ReservedPublicIPID  string    `json:"reservedPublicIpId,omitempty"`
+	PrimaryVNICID       string    `json:"primaryVnicId,omitempty"`
+	PrimaryPrivateIPID  string    `json:"primaryPrivateIpId,omitempty"`
+	PublicIPv4          string    `json:"publicIpv4,omitempty"`
+	RequestID           string    `json:"requestId,omitempty"`
+	WorkRequestID       string    `json:"workRequestId,omitempty"`
+	FinalState          string    `json:"finalState,omitempty"`
+	ErrorCode           string    `json:"errorCode,omitempty"`
+	ErrorMessage        string    `json:"errorMessage,omitempty"`
+	ExecutedAt          time.Time `json:"executedAt"`
 }
 
 func LaunchInstanceFromRequest(ctx context.Context, cfg ReadinessConfig, req domain.CreateInstanceRequest, jobID string) LaunchExecutionResult {
 	result := LaunchExecutionResult{
-		ExecutionMode:    cfg.ExecutionMode,
-		CompartmentID:    req.CompartmentID,
-		SubnetID:         req.SubnetID,
-		ImageID:          req.ImageID,
-		DisplayName:      req.Name,
-		Shape:            req.Shape,
-		OCPUs:            req.OCPUs,
-		MemoryGB:         req.MemoryGB,
-		BootVolumeGB:     req.BootVolumeGB,
-		AssignPublicIP:   req.AssignPublicIP || strings.TrimSpace(req.ReservedPublicIP) != "",
-		EnableIPv6:       req.EnableIPv6,
-		ReservedPublicIP: strings.TrimSpace(req.ReservedPublicIP),
-		ExecutedAt:       time.Now().UTC(),
+		ExecutionMode:       cfg.ExecutionMode,
+		CompartmentID:       req.CompartmentID,
+		SubnetID:            req.SubnetID,
+		ImageID:             req.ImageID,
+		DisplayName:         req.Name,
+		Shape:               req.Shape,
+		OCPUs:               req.OCPUs,
+		MemoryGB:            req.MemoryGB,
+		BootVolumeGB:        req.BootVolumeGB,
+		BootVolumeVPUsPerGB: req.BootVolumeVPUsPerGB,
+		AssignPublicIP:      req.AssignPublicIP || strings.TrimSpace(req.ReservedPublicIP) != "",
+		EnableIPv6:          req.EnableIPv6,
+		ReservedPublicIP:    strings.TrimSpace(req.ReservedPublicIP),
+		ExecutedAt:          time.Now().UTC(),
 	}
 	readiness := CheckReadiness(cfg)
 	if !readiness.Ready {
@@ -80,6 +82,14 @@ func LaunchInstanceFromRequest(ctx context.Context, cfg ReadinessConfig, req dom
 	}
 	if result.BootVolumeGB <= 0 {
 		result.BootVolumeGB = 50
+	}
+	if result.BootVolumeVPUsPerGB <= 0 {
+		result.BootVolumeVPUsPerGB = 10
+	}
+	if result.BootVolumeVPUsPerGB < 10 || result.BootVolumeVPUsPerGB > 120 {
+		result.ErrorCode = "OCI_LAUNCH_BOOT_VOLUME_VPUS_INVALID"
+		result.ErrorMessage = "bootVolumeVpusPerGb must be between 10 and 120"
+		return result
 	}
 	if result.CompartmentID == "" {
 		result.CompartmentID = cfg.TenancyOCID
@@ -150,6 +160,7 @@ func LaunchInstanceFromRequest(ctx context.Context, cfg ReadinessConfig, req dom
 			SourceDetails: core.InstanceSourceViaImageDetails{
 				ImageId:             common.String(result.ImageID),
 				BootVolumeSizeInGBs: common.Int64(int64(result.BootVolumeGB)),
+				BootVolumeVpusPerGB: common.Int64(int64(result.BootVolumeVPUsPerGB)),
 			},
 		},
 		OpcRetryToken: retryToken("launch", jobID),
@@ -389,27 +400,28 @@ func mapStringAnyToString(in map[string]string) map[string]string {
 
 func CreateRequestFromJobInput(input map[string]any) (domain.CreateInstanceRequest, error) {
 	req := domain.CreateInstanceRequest{
-		Name:             stringFromAny(input["name"]),
-		ProfileID:        stringFromAny(input["profileId"]),
-		Region:           stringFromAny(input["region"]),
-		Compartment:      stringFromAny(input["compartment"]),
-		CompartmentID:    stringFromAny(input["compartmentId"]),
-		AvailabilityAD:   stringFromAny(input["availabilityAd"]),
-		TemplateID:       stringFromAny(input["templateId"]),
-		ImageID:          stringFromAny(input["imageId"]),
-		Shape:            stringFromAny(input["shape"]),
-		OCPUs:            intFromAny(input["ocpus"]),
-		MemoryGB:         intFromAny(input["memoryGb"]),
-		BootVolumeGB:     intFromAny(input["bootVolumeGb"]),
-		AssignPublicIP:   boolFromAny(input["assignPublicIp"]),
-		EnableIPv6:       boolFromAny(input["enableIpv6"]),
-		ReservedPublicIP: stringFromAny(input["reservedPublicIp"]),
-		VCNID:            stringFromAny(input["vcnId"]),
-		SubnetID:         stringFromAny(input["subnetId"]),
-		SSHKey:           stringFromAny(input["sshKey"]),
-		CloudInit:        stringFromAny(input["cloudInit"]),
-		RequireApproval:  boolFromAny(input["requireApproval"]),
-		SnapshotBefore:   boolFromAny(input["snapshotBefore"]),
+		Name:                stringFromAny(input["name"]),
+		ProfileID:           stringFromAny(input["profileId"]),
+		Region:              stringFromAny(input["region"]),
+		Compartment:         stringFromAny(input["compartment"]),
+		CompartmentID:       stringFromAny(input["compartmentId"]),
+		AvailabilityAD:      stringFromAny(input["availabilityAd"]),
+		TemplateID:          stringFromAny(input["templateId"]),
+		ImageID:             stringFromAny(input["imageId"]),
+		Shape:               stringFromAny(input["shape"]),
+		OCPUs:               intFromAny(input["ocpus"]),
+		MemoryGB:            intFromAny(input["memoryGb"]),
+		BootVolumeGB:        intFromAny(input["bootVolumeGb"]),
+		BootVolumeVPUsPerGB: intFromAny(input["bootVolumeVpusPerGb"]),
+		AssignPublicIP:      boolFromAny(input["assignPublicIp"]),
+		EnableIPv6:          boolFromAny(input["enableIpv6"]),
+		ReservedPublicIP:    stringFromAny(input["reservedPublicIp"]),
+		VCNID:               stringFromAny(input["vcnId"]),
+		SubnetID:            stringFromAny(input["subnetId"]),
+		SSHKey:              stringFromAny(input["sshKey"]),
+		CloudInit:           stringFromAny(input["cloudInit"]),
+		RequireApproval:     boolFromAny(input["requireApproval"]),
+		SnapshotBefore:      boolFromAny(input["snapshotBefore"]),
 	}
 	if tags, ok := input["tags"].(map[string]string); ok {
 		req.Tags = tags

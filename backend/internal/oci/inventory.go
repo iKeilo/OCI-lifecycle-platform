@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"a-series-oracle/backend/internal/domain"
@@ -88,6 +89,11 @@ func ListInstanceInventory(ctx context.Context, cfg ReadinessConfig, req Instanc
 					result.ErrorMessage = err.Error()
 					return result
 				}
+				if err := fillBootVolumeSize(ctx, clients, result.CompartmentID, stringValue(item.AvailabilityDomain), &mapped, &result.RequestIDs); err != nil {
+					result.ErrorCode = "OCI_LIST_INSTANCE_BOOT_VOLUME_FAILED"
+					result.ErrorMessage = err.Error()
+					return result
+				}
 			}
 			result.Items = append(result.Items, mapped)
 		}
@@ -153,11 +159,74 @@ func fillPrimaryVNIC(ctx context.Context, clients Clients, compartmentID string,
 		if vnic.Vnic.IsPrimary == nil || *vnic.Vnic.IsPrimary {
 			instance.PrivateIP = stringValue(vnic.Vnic.PrivateIp)
 			instance.PrimaryIP = stringValue(vnic.Vnic.PublicIp)
+			instance.IPv6Addresses = cleanIPv6Addresses(vnic.Vnic.Ipv6Addresses)
+			instance.IPv6Enabled = len(instance.IPv6Addresses) > 0
+			if instance.IPv6Enabled {
+				instance.PrimaryIPv6 = instance.IPv6Addresses[0]
+			}
 			return nil
 		}
 	}
 
 	return nil
+}
+
+func fillBootVolumeSize(ctx context.Context, clients Clients, compartmentID string, availabilityDomain string, instance *domain.Instance, requestIDs *[]string) error {
+	if strings.TrimSpace(instance.OCIInstanceID) == "" {
+		return nil
+	}
+	availabilityDomain = strings.TrimSpace(availabilityDomain)
+	if availabilityDomain == "" {
+		return nil
+	}
+	attachments, err := clients.Compute.ListBootVolumeAttachments(ctx, core.ListBootVolumeAttachmentsRequest{
+		AvailabilityDomain: common.String(availabilityDomain),
+		CompartmentId:      common.String(compartmentID),
+		InstanceId:         common.String(instance.OCIInstanceID),
+		Limit:              common.Int(50),
+	})
+	appendRequestID(requestIDs, attachments.OpcRequestId)
+	if err != nil {
+		return err
+	}
+	for _, attachment := range attachments.Items {
+		if attachment.LifecycleState == core.BootVolumeAttachmentLifecycleStateDetached || attachment.LifecycleState == core.BootVolumeAttachmentLifecycleStateDetaching {
+			continue
+		}
+		bootVolumeID := stringValue(attachment.BootVolumeId)
+		if bootVolumeID == "" {
+			continue
+		}
+		bootVolume, err := clients.Blockstorage.GetBootVolume(ctx, core.GetBootVolumeRequest{
+			BootVolumeId: common.String(bootVolumeID),
+		})
+		appendRequestID(requestIDs, bootVolume.OpcRequestId)
+		if err != nil {
+			return err
+		}
+		if bootVolume.BootVolume.SizeInGBs != nil {
+			instance.BootVolumeGB = int(*bootVolume.BootVolume.SizeInGBs)
+		}
+		if bootVolume.BootVolume.VpusPerGB != nil {
+			instance.BootVolumeVPUsPerGB = int(*bootVolume.BootVolume.VpusPerGB)
+		}
+		return nil
+	}
+	return nil
+}
+
+func cleanIPv6Addresses(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func shapeConfigValues(config *core.InstanceShapeConfig) (int, int) {
