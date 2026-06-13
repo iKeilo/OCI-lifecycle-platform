@@ -5,7 +5,13 @@
 
 OCI Lifecycle Platform 是一个面向 Oracle Cloud Infrastructure 的机器生命周期控制平台。目标不是把几个 OCI API 包一层按钮，而是提供一套可登录、可审计、可任务化、可自动化扩展的资源编排控制台。
 
-项目目前只支持 OCI，不引入其它云厂商抽象，避免产品边界被污染。
+---
+
+# 必读
+## [免责声明（Disclaimer）](docs/DISCLAIMER.md)
+## [反滥用声明（Anti-Abuse Statement）](docs/Anti-Abuse Statement.MD)
+
+---
 
 ## 核心能力
 
