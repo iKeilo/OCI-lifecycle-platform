@@ -1,9 +1,10 @@
 import { CloudCog, HardDrive, Network, RefreshCw, Server, ShieldCheck, Tags } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { getSelectedOCIContext, onOCIContextChange } from "../app/ociContext";
 import { AsyncState } from "../components/AsyncState";
 import { PageHeader } from "../components/PageHeader";
-import { createInstanceTask, getLaunchOptions, getLaunchOptionsForContext, listInstances } from "../services/api";
+import { createInstanceTask, getLaunchOptionsForContext, listInstances } from "../services/api";
 import type { BootVolumeUsage, Instance, Job, LaunchOption, LaunchOptions, ShapeOption } from "../services/api";
 
 const ALWAYS_FREE_SHAPES = new Set(["VM.Standard.E2.1.Micro", "VM.Standard.A1.Flex"]);
@@ -82,8 +83,14 @@ export function CreateInstancePage() {
       setIsLoading(true);
       setLoadError("");
       try {
-        const [launchOptions, instances] = await Promise.all([getLaunchOptions(), listInstances().catch(() => [])]);
+        const context = getSelectedOCIContext();
+        const [launchOptions, instances] = await Promise.all([
+          getLaunchOptionsForContext({ profileId: context.profileId, region: context.region }),
+          listInstances({ profileId: context.profileId, region: context.region }).catch(() => [])
+        ]);
         applyLoadedOptions(launchOptions);
+        if (context.profileId) setProfileId(context.profileId);
+        if (context.region) setRegion(context.region);
         setInventoryInstances(instances);
         setInventoryBootVolumeGb(sumBootVolumes(instances));
       } catch (error) {
@@ -94,6 +101,11 @@ export function CreateInstancePage() {
     }
 
     void load();
+    return onOCIContextChange((context) => {
+      setProfileId(context.profileId);
+      setRegion(context.region);
+      void refreshLaunchOptionsForContext({ profileId: context.profileId, region: context.region });
+    });
   }, []);
 
   useEffect(() => {
@@ -167,7 +179,7 @@ export function CreateInstancePage() {
           vcnId: context.vcnId,
           shape: context.shape
         }),
-        listInstances().catch(() => [])
+        listInstances({ profileId: context.profileId, region: context.region }).catch(() => [])
       ]);
       if (sequence !== optionsRefreshSeq.current) return;
       applyLoadedOptions(launchOptions, context.shape);

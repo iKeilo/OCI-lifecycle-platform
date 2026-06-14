@@ -1,6 +1,7 @@
 import { Bell, ChevronDown, LogOut, Menu, Moon, RefreshCw, Search, Settings2, Sun, X } from "lucide-react";
 import { useEffect, useMemo, useState, type PropsWithChildren } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
+import { getSelectedOCIContext, setSelectedOCIContext } from "../app/ociContext";
 import { navGroups, productMark as ProductMark } from "../app/navigation";
 import {
   getAccountSettings,
@@ -18,7 +19,7 @@ type AppShellProps = PropsWithChildren<{
 
 const GITHUB_PROJECT_URL = "https://github.com/iKeilo/OCI-lifecycle-platform";
 const GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/iKeilo/OCI-lifecycle-platform/releases/latest";
-const APP_VERSION = normalizeVersion(__APP_VERSION__ || "1.0.19");
+const APP_VERSION = normalizeVersion(__APP_VERSION__ || "1.0.20");
 
 type VersionCheckState = {
   latestVersion: string;
@@ -42,7 +43,10 @@ export function AppShell({ children, onLogout }: AppShellProps) {
     backgroundImage: "",
     language: "zh-CN"
   });
+  const [selectedProfileId, setSelectedProfileId] = useState(() => getSelectedOCIContext().profileId);
   const [selectedRegion, setSelectedRegion] = useState("");
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [contextMessage, setContextMessage] = useState("");
   const [loggingOut, setLoggingOut] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [versionModalOpen, setVersionModalOpen] = useState(false);
@@ -59,20 +63,29 @@ export function AppShell({ children, onLogout }: AppShellProps) {
     let cancelled = false;
     async function loadContext() {
       try {
+        const savedContext = getSelectedOCIContext();
         const [nextProfiles, nextReadiness, notifications, nextAccount, nextAppearance] = await Promise.all([
           listProfiles(),
-          getOCIReadiness(),
+          getOCIReadiness(savedContext),
           listNotifications(true),
           getAccountSettings(),
           getAppearanceSettings()
         ]);
+        const savedProfile = nextProfiles.find((profile) => profile.id === savedContext.profileId);
+        const firstProfile = nextProfiles[0];
+        const activeProfile = savedProfile ?? firstProfile;
+        const activeRegion = savedContext.region || activeProfile?.defaultRegion || "";
         if (!cancelled) {
           setProfiles(nextProfiles);
           setReadiness(nextReadiness);
           setUnreadNotifications(notifications.unreadCount);
           setAccount(nextAccount);
           setAppearance(nextAppearance);
-          setSelectedRegion((current) => current || nextProfiles[0]?.defaultRegion || "");
+          setSelectedProfileId(activeProfile?.id || "");
+          setSelectedRegion(activeRegion);
+          if (activeProfile) {
+            setSelectedOCIContext({ profileId: activeProfile.id, region: activeRegion });
+          }
         }
       } catch {
         if (!cancelled) {
@@ -125,6 +138,31 @@ export function AppShell({ children, onLogout }: AppShellProps) {
     }
   }
 
+  async function selectProfile(profile: Profile) {
+    const nextRegion = profile.defaultRegion || selectedRegion;
+    setSelectedProfileId(profile.id);
+    setSelectedRegion(nextRegion);
+    setProfileMenuOpen(false);
+    setContextMessage("");
+    const nextContext = setSelectedOCIContext({ profileId: profile.id, region: nextRegion });
+    try {
+      setReadiness(await getOCIReadiness(nextContext));
+      setContextMessage(`已切换到 ${profile.name}`);
+    } catch (error) {
+      setContextMessage(error instanceof Error ? error.message : "切换 Profile 后刷新 OCI 状态失败");
+    }
+  }
+
+  async function updateRegion(region: string) {
+    setSelectedRegion(region);
+    const nextContext = setSelectedOCIContext({ profileId: selectedProfileId, region });
+    try {
+      setReadiness(await getOCIReadiness(nextContext));
+    } catch {
+      // Page-level refreshes still receive the new context; keep the UI responsive.
+    }
+  }
+
   async function checkLatestVersion(showErrors: boolean) {
     setVersionCheck((current) => ({ ...current, checking: true, error: showErrors ? "" : current.error }));
     try {
@@ -159,15 +197,17 @@ export function AppShell({ children, onLogout }: AppShellProps) {
     const values = profiles.map((profile) => profile.defaultRegion).filter(Boolean);
     return Array.from(new Set(values));
   }, [profiles]);
+  const selectedProfile = useMemo(
+    () => profiles.find((profile) => profile.id === selectedProfileId) ?? profiles[0],
+    [profiles, selectedProfileId]
+  );
 
   const quickStats = useMemo(() => {
-    const profile = profiles[0];
     return [
-      { label: "Profile", value: profile?.name ?? "未配置", tone: profile ? "neutral" : "warning" },
       { label: "模式", value: readiness?.executionMode ?? "local", tone: "neutral" },
       { label: "OCI", value: readiness?.ready ? "就绪" : "未就绪", tone: readiness?.ready ? "success" : "warning" }
     ];
-  }, [profiles, readiness]);
+  }, [readiness]);
   const flatNavItems = useMemo(() => navGroups.flatMap((group) => group.items.map((item) => ({ ...item, group: group.label }))), []);
   const currentNavItem = useMemo(() => {
     const sorted = [...flatNavItems].sort((a, b) => b.path.length - a.path.length);
@@ -208,7 +248,7 @@ export function AppShell({ children, onLogout }: AppShellProps) {
             <div className="mobile-drawer-header">
               <div>
                 <strong>移动控制台</strong>
-                <span>{profiles[0]?.name ?? "Profile 未配置"} / {readiness?.ready ? "OCI 就绪" : "OCI 未就绪"}</span>
+                <span>{selectedProfile?.name ?? "Profile 未配置"} / {readiness?.ready ? "OCI 就绪" : "OCI 未就绪"}</span>
               </div>
               <button className="icon-button bordered" aria-label="关闭菜单" type="button" onClick={() => setMobileMenuOpen(false)}>
                 <X size={18} />
@@ -217,7 +257,7 @@ export function AppShell({ children, onLogout }: AppShellProps) {
             <div className="mobile-context-card">
               <label>
                 区域
-                <select value={selectedRegion} onChange={(event) => setSelectedRegion(event.target.value)}>
+                <select value={selectedRegion} onChange={(event) => void updateRegion(event.target.value)}>
                   {regionOptions.length === 0 ? <option value="">未配置</option> : null}
                   {regionOptions.map((region) => (
                     <option value={region} key={region}>{region}</option>
@@ -306,15 +346,57 @@ export function AppShell({ children, onLogout }: AppShellProps) {
           </div>
 
           <div className="context-strip">
-            {quickStats.slice(0, 1).map((stat) => (
-              <div className={`context-chip ${stat.tone}`} key={stat.label}>
-                <span>{stat.label}</span>
-                <strong>{stat.value}</strong>
-              </div>
-            ))}
+            <div className="profile-context-menu-wrap">
+              <button
+                className={`context-chip profile-context-button ${selectedProfile ? "neutral" : "warning"}`}
+                type="button"
+                onClick={() => setProfileMenuOpen((value) => !value)}
+                aria-expanded={profileMenuOpen}
+              >
+                <span>Profile</span>
+                <strong>{selectedProfile?.name ?? "未配置"}</strong>
+                <ChevronDown size={14} />
+              </button>
+              {profileMenuOpen ? (
+                <div className="profile-menu glass-modal">
+                  <div className="profile-menu-header">
+                    <strong>切换 OCI Profile</strong>
+                    <button className="icon-button small" aria-label="关闭 Profile 菜单" type="button" onClick={() => setProfileMenuOpen(false)}>
+                      <X size={15} />
+                    </button>
+                  </div>
+                  {profiles.length === 0 ? (
+                    <div className="profile-menu-empty">
+                      <p>暂无 Profile。</p>
+                      <button className="secondary-button compact-button" type="button" onClick={() => { setProfileMenuOpen(false); navigate("/profiles"); }}>
+                        去添加
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="profile-menu-list">
+                      {profiles.map((profile) => (
+                        <button
+                          className={`profile-menu-item ${profile.id === selectedProfile?.id ? "active" : ""}`}
+                          key={profile.id}
+                          type="button"
+                          onClick={() => void selectProfile(profile)}
+                        >
+                          <span>
+                            <strong>{profile.name}</strong>
+                            <small>{profile.defaultRegion}</small>
+                          </span>
+                          <em>{profile.status || "Unknown"}</em>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {contextMessage ? <p className="profile-menu-message">{contextMessage}</p> : null}
+                </div>
+              ) : null}
+            </div>
             <label className={`context-chip context-chip-select ${selectedRegion ? "neutral" : "warning"}`}>
               <span>区域</span>
-              <select value={selectedRegion} onChange={(event) => setSelectedRegion(event.target.value)}>
+              <select value={selectedRegion} onChange={(event) => void updateRegion(event.target.value)}>
                 {regionOptions.length === 0 ? <option value="">未配置</option> : null}
                 {regionOptions.map((region) => (
                   <option value={region} key={region}>
@@ -324,7 +406,7 @@ export function AppShell({ children, onLogout }: AppShellProps) {
               </select>
               <ChevronDown size={14} />
             </label>
-            {quickStats.slice(1).map((stat) => (
+            {quickStats.map((stat) => (
               <div className={`context-chip ${stat.tone}`} key={stat.label}>
                 <span>{stat.label}</span>
                 <strong>{stat.value}</strong>

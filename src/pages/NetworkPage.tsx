@@ -1,6 +1,7 @@
 import { Globe2, Network, RefreshCw, Router, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { getSelectedOCIContext, onOCIContextChange } from "../app/ociContext";
 import { PageHeader } from "../components/PageHeader";
 import { StatusPill } from "../components/StatusPill";
 import {
@@ -27,7 +28,7 @@ export function NetworkPage() {
   const [profiles, setProfiles] = useState<LaunchOption[]>([]);
   const [compartments, setCompartments] = useState<LaunchOption[]>([]);
   const [vcns, setVCNs] = useState<LaunchOption[]>([]);
-  const [filters, setFilters] = useState({ profileId: "", compartmentId: "", vcnId: "" });
+  const [filters, setFilters] = useState(() => ({ ...getSelectedOCIContext(), compartmentId: "", vcnId: "" }));
   const [batchCount, setBatchCount] = useState(1);
   const [batchPrefix, setBatchPrefix] = useState("reserved-public-ip");
   const [selectedPublicIpIds, setSelectedPublicIpIds] = useState<Set<string>>(new Set());
@@ -36,13 +37,13 @@ export function NetworkPage() {
   const [error, setError] = useState("");
   const [taskMessage, setTaskMessage] = useState("");
 
-  async function load() {
+  async function load(nextFilters = filters) {
     setLoading(true);
     setError("");
     try {
       const [options, nextInventory] = await Promise.all([
         getLaunchOptions(),
-        getNetworkInventory(filters)
+        getNetworkInventory(nextFilters)
       ]);
       setProfiles(options.profiles.map((profile) => ({ id: profile.id, label: profile.name, region: profile.defaultRegion })));
       setCompartments(options.compartments);
@@ -61,6 +62,13 @@ export function NetworkPage() {
 
   useEffect(() => {
     void load();
+    return onOCIContextChange((context) => {
+      setFilters((current) => {
+        const next = { ...current, profileId: context.profileId, region: context.region };
+        void load(next);
+        return next;
+      });
+    });
   }, []);
 
   const reserved = useMemo(() => inventory.publicIps.filter((item) => item.lifetime === "RESERVED"), [inventory.publicIps]);
@@ -95,6 +103,7 @@ export function NetworkPage() {
       const job = await createPublicIPBatchTask({
         action,
         profileId: filters.profileId,
+        region: filters.region,
         compartmentId: filters.compartmentId,
         count: action === "create" ? batchCount : undefined,
         displayPrefix: action === "create" ? batchPrefix : undefined,
@@ -128,7 +137,13 @@ export function NetworkPage() {
         <div className="toolbar-actions network-filters">
           <label>
             Profile
-            <select value={filters.profileId} onChange={(event) => setFilters((current) => ({ ...current, profileId: event.target.value }))}>
+            <select
+              value={filters.profileId}
+              onChange={(event) => {
+                const profile = profiles.find((item) => item.id === event.target.value);
+                setFilters((current) => ({ ...current, profileId: event.target.value, region: profile?.region || current.region }));
+              }}
+            >
               <option value="">默认 Profile</option>
               {profiles.map((profile) => (
                 <option value={profile.id} key={profile.id}>{profile.label}</option>

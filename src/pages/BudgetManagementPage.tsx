@@ -1,5 +1,6 @@
 import { AlertTriangle, ArrowDownWideNarrow, Bell, DollarSign, FileWarning, Gauge, Power, Save, Server, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { getSelectedOCIContext, onOCIContextChange } from "../app/ociContext";
 import { PageHeader } from "../components/PageHeader";
 import { getBudgetSettings, listInstances, updateBudgetSettings } from "../services/api";
 import type { BudgetSettings, Instance } from "../services/api";
@@ -106,6 +107,7 @@ export function BudgetManagementPage() {
   useEffect(() => {
     void loadBudgetSettings();
     void loadBudgetInstances();
+    return onOCIContextChange(() => void loadBudgetInstances());
   }, []);
 
   async function loadBudgetSettings() {
@@ -124,7 +126,8 @@ export function BudgetManagementPage() {
     setIsLoadingInstances(true);
     setInstanceError("");
     try {
-      setInstances(await listInstances());
+      const context = getSelectedOCIContext();
+      setInstances(await listInstances({ profileId: context.profileId, region: context.region }));
     } catch (error) {
       setInstanceError(error instanceof Error ? error.message : "加载实例列表失败");
     } finally {

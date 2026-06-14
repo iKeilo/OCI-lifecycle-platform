@@ -1,5 +1,6 @@
 import { AlertCircle, CheckCircle2, Cpu, Database, KeyRound, RefreshCw, Server } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { getSelectedOCIContext, onOCIContextChange } from "../app/ociContext";
 import { AsyncState } from "../components/AsyncState";
 import { MetricCard } from "../components/MetricCard";
 import { PageHeader } from "../components/PageHeader";
@@ -19,11 +20,12 @@ export function DashboardPage() {
     setIsLoading(true);
     setErrorMessage("");
     try {
+      const context = getSelectedOCIContext();
       const [nextInstances, nextJobs, nextProfiles, nextReadiness] = await Promise.all([
-        listInstances(),
+        listInstances({ profileId: context.profileId, region: context.region }),
         listJobs(),
         listProfiles(),
-        getOCIReadiness()
+        getOCIReadiness(context)
       ]);
       setInstances(nextInstances);
       setJobs(nextJobs);
@@ -38,6 +40,7 @@ export function DashboardPage() {
 
   useEffect(() => {
     void load();
+    return onOCIContextChange(() => void load());
   }, []);
 
   const runningCount = useMemo(() => instances.filter((item) => item.status === "Running").length, [instances]);

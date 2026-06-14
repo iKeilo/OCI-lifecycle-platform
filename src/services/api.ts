@@ -552,8 +552,11 @@ export async function getLaunchOptionsForContext(params: {
   return request<LaunchOptions>(`/api/launch-options${query.toString() ? `?${query.toString()}` : ""}`);
 }
 
-export async function getOCIReadiness(): Promise<OCIReadiness> {
-  return request<OCIReadiness>("/api/oci/readiness");
+export async function getOCIReadiness(params: { profileId?: string; region?: string } = {}): Promise<OCIReadiness> {
+  const query = new URLSearchParams();
+  if (params.profileId) query.set("profileId", params.profileId);
+  if (params.region) query.set("region", params.region);
+  return request<OCIReadiness>(`/api/oci/readiness${query.toString() ? `?${query.toString()}` : ""}`);
 }
 
 export async function validateOCIReadOnly(compartmentId = ""): Promise<OCIReadOnlyValidationResult> {
@@ -606,9 +609,13 @@ export async function deleteProfile(profileId: string): Promise<void> {
   });
 }
 
-export async function listInstances(status?: string): Promise<Instance[]> {
-  const query = status ? `?status=${encodeURIComponent(status)}` : "";
-  const response = await request<ListResponse<Instance>>(`/api/instances${query}`);
+export async function listInstances(params: string | { status?: string; profileId?: string; region?: string; compartmentId?: string } = {}): Promise<Instance[]> {
+  const normalized = typeof params === "string" ? { status: params } : params;
+  const query = new URLSearchParams();
+  Object.entries(normalized).forEach(([key, value]) => {
+    if (value) query.set(key, value);
+  });
+  const response = await request<ListResponse<Instance>>(`/api/instances${query.toString() ? `?${query.toString()}` : ""}`);
   return response.items;
 }
 

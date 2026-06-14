@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { getSelectedOCIContext, onOCIContextChange } from "../app/ociContext";
 import { AsyncState } from "../components/AsyncState";
 import { PageHeader } from "../components/PageHeader";
 import { StatusPill } from "../components/StatusPill";
@@ -67,7 +68,8 @@ export function InstancesPage() {
     setIsLoading(true);
     setErrorMessage("");
     try {
-      setInstances(await listInstances());
+      const context = getSelectedOCIContext();
+      setInstances(await listInstances({ profileId: context.profileId, region: context.region }));
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "加载实例失败");
     } finally {
@@ -77,6 +79,7 @@ export function InstancesPage() {
 
   useEffect(() => {
     void reloadInstances();
+    return onOCIContextChange(() => void reloadInstances());
   }, [reloadInstances]);
 
   const filteredInstances = useMemo(() => {
