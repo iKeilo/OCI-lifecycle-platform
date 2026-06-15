@@ -77,6 +77,9 @@ Environment:
   GO_PROXY                   Optional Go module proxy, passed to GOPROXY.
   OCI_LIFECYCLE_USE_PACKAGE  Docker mode only. Default true pulls GHCR image instead of building locally.
                              Set false to build from source on the server.
+  OCI_LIFECYCLE_REQUIRE_PACKAGE
+                             Docker mode only. Set true to fail instead of falling back to local build
+                             when the GHCR package pull fails.
   OCI_LIFECYCLE_IMAGE        Docker image override. Default GHCR image in package mode.
   OCI_LIFECYCLE_IMAGE_TAG    GHCR image tag for package mode, default latest.
   GO_ROOT                    Go toolchain directory, default APP_DIR/.toolchain/go.
@@ -874,8 +877,13 @@ docker_build_image() {
   [[ -f "$DOCKER_COMPOSE_FILE" ]] || die "missing compose file: $DOCKER_COMPOSE_FILE"
   if [[ "$DOCKER_USE_PACKAGE" == "true" ]]; then
     log "pulling Docker package $(docker_current_image)"
-    docker pull "$(docker_current_image)"
-    return
+    if docker pull "$(docker_current_image)"; then
+      return
+    fi
+    if [[ "${OCI_LIFECYCLE_REQUIRE_PACKAGE:-false}" == "true" ]]; then
+      die "failed to pull Docker package $(docker_current_image)"
+    fi
+    warn "failed to pull Docker package $(docker_current_image); falling back to local build from downloaded source"
   fi
   log "building Docker image $(docker_current_image)"
   docker_compose build app
