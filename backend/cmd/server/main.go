@@ -82,6 +82,12 @@ func main() {
 			os.Exit(1)
 		}
 		appStore.ReplaceInstances(instances)
+		templates, err := persistence.ListTemplates()
+		if err != nil {
+			slog.Error("database template load failed", "error", err)
+			os.Exit(1)
+		}
+		appStore.ReplaceTemplates(templates)
 		appStore.SetPersistenceSink(persistence)
 		if err := appStore.LoadPersistedSettings(); err != nil {
 			slog.Error("database settings load failed", "error", err)
@@ -117,6 +123,12 @@ func main() {
 			os.Exit(1)
 		}
 		appStore.ReplaceProfiles(profiles)
+		templates, err := persistence.ListTemplates()
+		if err != nil {
+			slog.Error("file template load failed", "error", err)
+			os.Exit(1)
+		}
+		appStore.ReplaceTemplates(templates)
 		appStore.SetPersistenceSink(persistence)
 		if len(profiles) == 0 {
 			if profile := envProfile(cfg); profile.ID != "" {

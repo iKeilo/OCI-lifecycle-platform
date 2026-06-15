@@ -175,6 +175,197 @@ func (s *PostgresSink) DeleteProfile(profileID string) error {
 	return err
 }
 
+func (s *PostgresSink) SaveTemplate(template domain.InstanceTemplate) error {
+	if s == nil || s.conn == nil {
+		return ErrNotConfigured()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tags, err := json.Marshal(template.Tags)
+	if err != nil {
+		return err
+	}
+	_, err = s.conn.ExecContext(ctx, `
+INSERT INTO instance_templates (
+  id, name, description, version, profile_id, region, compartment, compartment_id, availability_ad,
+  image_id, image_name, shape, ocpus, memory_gb, boot_volume_gb, boot_volume_vpus_per_gb,
+  vcn_id, subnet_id, assign_public_ip, enable_ipv6, reserved_public_ip, ssh_key, cloud_init, cloud_init_set,
+  tags, config_format, config_text, status, validation_status, validation_error_code, validation_message, last_validated_at,
+  created_by, created_at, updated_at
+) VALUES (
+  $1, $2, $3, $4, $5, $6, $7, $8, $9,
+  $10, $11, $12, $13, $14, $15, $16,
+  $17, $18, $19, $20, $21, $22, $23, $24,
+  $25, $26, $27, $28, $29, $30, $31, $32,
+  $33, $34, $35
+)
+ON CONFLICT (id) DO UPDATE SET
+  name = EXCLUDED.name,
+  description = EXCLUDED.description,
+  version = EXCLUDED.version,
+  profile_id = EXCLUDED.profile_id,
+  region = EXCLUDED.region,
+  compartment = EXCLUDED.compartment,
+  compartment_id = EXCLUDED.compartment_id,
+  availability_ad = EXCLUDED.availability_ad,
+  image_id = EXCLUDED.image_id,
+  image_name = EXCLUDED.image_name,
+  shape = EXCLUDED.shape,
+  ocpus = EXCLUDED.ocpus,
+  memory_gb = EXCLUDED.memory_gb,
+  boot_volume_gb = EXCLUDED.boot_volume_gb,
+  boot_volume_vpus_per_gb = EXCLUDED.boot_volume_vpus_per_gb,
+  vcn_id = EXCLUDED.vcn_id,
+  subnet_id = EXCLUDED.subnet_id,
+  assign_public_ip = EXCLUDED.assign_public_ip,
+  enable_ipv6 = EXCLUDED.enable_ipv6,
+  reserved_public_ip = EXCLUDED.reserved_public_ip,
+  ssh_key = EXCLUDED.ssh_key,
+  cloud_init = EXCLUDED.cloud_init,
+  cloud_init_set = EXCLUDED.cloud_init_set,
+  tags = EXCLUDED.tags,
+  config_format = EXCLUDED.config_format,
+  config_text = EXCLUDED.config_text,
+  status = EXCLUDED.status,
+  validation_status = EXCLUDED.validation_status,
+  validation_error_code = EXCLUDED.validation_error_code,
+  validation_message = EXCLUDED.validation_message,
+  last_validated_at = EXCLUDED.last_validated_at,
+  updated_at = EXCLUDED.updated_at`,
+		template.ID,
+		template.Name,
+		template.Description,
+		template.Version,
+		template.ProfileID,
+		template.Region,
+		template.Compartment,
+		template.CompartmentID,
+		template.AvailabilityAD,
+		template.ImageID,
+		template.ImageName,
+		template.Shape,
+		template.OCPUs,
+		template.MemoryGB,
+		template.BootVolumeGB,
+		defaultInt(template.BootVolumeVPUsPerGB, 10),
+		template.VCNID,
+		template.SubnetID,
+		template.AssignPublicIP,
+		template.EnableIPv6,
+		template.ReservedPublicIP,
+		template.SSHKey,
+		template.CloudInit,
+		template.CloudInitSet || strings.TrimSpace(template.CloudInit) != "",
+		tags,
+		template.ConfigFormat,
+		template.ConfigText,
+		template.Status,
+		template.ValidationStatus,
+		template.ValidationErrorCode,
+		template.ValidationMessage,
+		nullableTime(template.LastValidatedAt),
+		template.CreatedBy,
+		nullableTime(template.CreatedAt),
+		nullableTime(template.UpdatedAt),
+	)
+	return err
+}
+
+func (s *PostgresSink) ListTemplates() ([]domain.InstanceTemplate, error) {
+	if s == nil || s.conn == nil {
+		return nil, ErrNotConfigured()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rows, err := s.conn.QueryContext(ctx, `
+SELECT id, name, description, version, profile_id, region, compartment, compartment_id, availability_ad,
+       image_id, image_name, shape, ocpus, memory_gb, boot_volume_gb, boot_volume_vpus_per_gb,
+       vcn_id, subnet_id, assign_public_ip, enable_ipv6, reserved_public_ip, ssh_key, cloud_init, cloud_init_set,
+       tags, config_format, config_text, status, validation_status, validation_error_code, validation_message, last_validated_at,
+       created_by, created_at, updated_at
+FROM instance_templates
+ORDER BY region ASC, name ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.InstanceTemplate
+	for rows.Next() {
+		var template domain.InstanceTemplate
+		var tagsRaw []byte
+		var lastValidatedAt, createdAt, updatedAt sql.NullTime
+		if err := rows.Scan(
+			&template.ID,
+			&template.Name,
+			&template.Description,
+			&template.Version,
+			&template.ProfileID,
+			&template.Region,
+			&template.Compartment,
+			&template.CompartmentID,
+			&template.AvailabilityAD,
+			&template.ImageID,
+			&template.ImageName,
+			&template.Shape,
+			&template.OCPUs,
+			&template.MemoryGB,
+			&template.BootVolumeGB,
+			&template.BootVolumeVPUsPerGB,
+			&template.VCNID,
+			&template.SubnetID,
+			&template.AssignPublicIP,
+			&template.EnableIPv6,
+			&template.ReservedPublicIP,
+			&template.SSHKey,
+			&template.CloudInit,
+			&template.CloudInitSet,
+			&tagsRaw,
+			&template.ConfigFormat,
+			&template.ConfigText,
+			&template.Status,
+			&template.ValidationStatus,
+			&template.ValidationErrorCode,
+			&template.ValidationMessage,
+			&lastValidatedAt,
+			&template.CreatedBy,
+			&createdAt,
+			&updatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if len(tagsRaw) > 0 {
+			_ = json.Unmarshal(tagsRaw, &template.Tags)
+		}
+		if template.Tags == nil {
+			template.Tags = map[string]string{}
+		}
+		if lastValidatedAt.Valid {
+			template.LastValidatedAt = lastValidatedAt.Time
+		}
+		if createdAt.Valid {
+			template.CreatedAt = createdAt.Time
+		}
+		if updatedAt.Valid {
+			template.UpdatedAt = updatedAt.Time
+		}
+		out = append(out, template)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *PostgresSink) DeleteTemplate(templateID string) error {
+	if s == nil || s.conn == nil {
+		return ErrNotConfigured()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := s.conn.ExecContext(ctx, `DELETE FROM instance_templates WHERE id = $1`, templateID)
+	return err
+}
+
 func (s *PostgresSink) SaveInstance(instance domain.Instance) error {
 	if s == nil || s.conn == nil {
 		return ErrNotConfigured()

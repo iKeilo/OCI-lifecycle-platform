@@ -1,11 +1,11 @@
-import { CloudCog, HardDrive, Network, RefreshCw, Server, ShieldCheck, Tags } from "lucide-react";
+import { ClipboardList, CloudCog, HardDrive, Network, RefreshCw, Save, Server, ShieldCheck, Tags } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { getSelectedOCIContext, onOCIContextChange } from "../app/ociContext";
 import { AsyncState } from "../components/AsyncState";
 import { PageHeader } from "../components/PageHeader";
-import { createInstanceTask, getLaunchOptionsForContext, listInstances } from "../services/api";
-import type { BootVolumeUsage, Instance, Job, LaunchOption, LaunchOptions, ShapeOption } from "../services/api";
+import { createInstanceTask, createTemplate, getLaunchOptionsForContext, listInstances, listTemplates, updateTemplate } from "../services/api";
+import type { BootVolumeUsage, Instance, InstanceTemplate, Job, LaunchOption, LaunchOptions, ShapeOption } from "../services/api";
 
 const ALWAYS_FREE_SHAPES = new Set(["VM.Standard.E2.1.Micro", "VM.Standard.A1.Flex"]);
 const ALWAYS_FREE_BOOT_VOLUME_GB = 200;
@@ -20,9 +20,16 @@ const A1_FLEX_PRICE = { ocpuHour: 0.01, memoryGbHour: 0.0015 };
 const BOOT_VOLUME_GB_MONTH = 0.0255;
 const BOOT_VOLUME_VPU_GB_MONTH = 0.0017;
 const BOOT_VOLUME_VPU_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
+const TEMPLATE_BOOT_VOLUME_OPTIONS = [50, 60, 75, 100, 150, 200, 256, 512, 1024];
 
 export function CreateInstancePage() {
+  const [searchParams] = useSearchParams();
+  const isTemplateMode = searchParams.get("mode") === "template";
+  const editTemplateId = searchParams.get("editTemplateId") || "";
   const [options, setOptions] = useState<LaunchOptions | null>(null);
+  const [templates, setTemplates] = useState<InstanceTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState(searchParams.get("templateId") || "");
+  const [appliedTemplate, setAppliedTemplate] = useState<InstanceTemplate | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshingOptions, setIsRefreshingOptions] = useState(false);
   const [loadError, setLoadError] = useState("");
@@ -60,6 +67,7 @@ export function CreateInstancePage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [resultMessage, setResultMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [isSavingTemplate, setIsSavingTemplate] = useState(false);
   const optionsRefreshSeq = useRef(0);
   const shapeCatalogRef = useRef<ShapeOption[]>([]);
 
@@ -84,15 +92,24 @@ export function CreateInstancePage() {
       setLoadError("");
       try {
         const context = getSelectedOCIContext();
-        const [launchOptions, instances] = await Promise.all([
+        const [launchOptions, instances, templateItems] = await Promise.all([
           getLaunchOptionsForContext({ profileId: context.profileId, region: context.region }),
-          listInstances({ profileId: context.profileId, region: context.region }).catch(() => [])
+          listInstances({ profileId: context.profileId, region: context.region }).catch(() => []),
+          listTemplates({ profileId: context.profileId, region: context.region }).catch(() => [])
         ]);
         applyLoadedOptions(launchOptions);
+        setTemplates(templateItems);
         if (context.profileId) setProfileId(context.profileId);
         if (context.region) setRegion(context.region);
         setInventoryInstances(instances);
         setInventoryBootVolumeGb(sumBootVolumes(instances));
+        const requestedTemplateId = searchParams.get("templateId");
+        if (requestedTemplateId) {
+          const requestedTemplate = templateItems.find((item) => item.id === requestedTemplateId);
+          if (requestedTemplate) {
+            applyTemplate(requestedTemplate);
+          }
+        }
       } catch (error) {
         setLoadError(error instanceof Error ? error.message : "加载创建选项失败");
       } finally {
@@ -170,7 +187,7 @@ export function CreateInstancePage() {
         shape,
         ...overrides
       };
-      const [launchOptions, instances] = await Promise.all([
+      const [launchOptions, instances, templateItems] = await Promise.all([
         getLaunchOptionsForContext({
           profileId: context.profileId,
           region: context.region,
@@ -179,15 +196,17 @@ export function CreateInstancePage() {
           vcnId: context.vcnId,
           shape: context.shape
         }),
-        listInstances({ profileId: context.profileId, region: context.region }).catch(() => [])
+        listInstances({ profileId: context.profileId, region: context.region }).catch(() => []),
+        listTemplates({ profileId: context.profileId, region: context.region }).catch(() => [])
       ]);
       if (sequence !== optionsRefreshSeq.current) return;
       applyLoadedOptions(launchOptions, context.shape);
       setInventoryInstances(instances);
       setInventoryBootVolumeGb(sumBootVolumes(instances));
+      setTemplates(templateItems);
     } catch (error) {
       if (sequence !== optionsRefreshSeq.current) return;
-      setLoadError(error instanceof Error ? error.message : "刷新真实 OCI 选项失败");
+      setLoadError(error instanceof Error ? error.message : "刷新选项失败");
     } finally {
       if (sequence === optionsRefreshSeq.current) {
         setIsRefreshingOptions(false);
@@ -207,6 +226,130 @@ export function CreateInstancePage() {
       setMemoryGb((current) => clampShapeValue(current, shapeOption.minMemoryGb, shapeOption.maxMemoryGb));
     }
     void refreshLaunchOptionsForContext({ shape: nextShape });
+  }
+
+  function applyTemplate(template: InstanceTemplate) {
+    setSelectedTemplateId(template.id);
+    setAppliedTemplate(template);
+    if (isTemplateMode) setName(template.name);
+    if (!isTemplateMode) {
+      const defaultInstanceName = templateInstanceName(template);
+      if (defaultInstanceName) setName(defaultInstanceName);
+    }
+    if (template.profileId) setProfileId(template.profileId);
+    if (template.region) setRegion(template.region);
+    if (template.compartmentId) setCompartmentId(template.compartmentId);
+    if (template.availabilityAd) setAvailabilityAd(template.availabilityAd);
+    if (template.imageId) setImageId(template.imageId);
+    if (template.shape) setShape(template.shape);
+    if (template.ocpus > 0) setOcpus(template.ocpus);
+    if (template.memoryGb > 0) setMemoryGb(template.memoryGb);
+    if (template.bootVolumeGb > 0) setBootVolumeGb(template.bootVolumeGb);
+    if (template.bootVolumeVpusPerGb > 0) setBootVolumeVpusPerGb(template.bootVolumeVpusPerGb);
+    if (template.vcnId) setVcnId(template.vcnId);
+    if (template.subnetId) setSubnetId(template.subnetId);
+    setAssignPublicIp(Boolean(template.assignPublicIp));
+    setEnableIpv6(Boolean(template.enableIpv6));
+    if (template.reservedPublicIp) setReservedPublicIp(template.reservedPublicIp);
+    if (template.sshKey) setSshKey(template.sshKey);
+    if (template.cloudInit) setCloudInit(template.cloudInit);
+    if (template.tags?.owner) setOwnerTag(template.tags.owner);
+    if (template.tags?.purpose) setPurposeTag(template.tags.purpose);
+    void refreshLaunchOptionsForContext({
+      profileId: template.profileId || profileId,
+      region: template.region || region,
+      compartmentId: template.compartmentId || compartmentId,
+      availabilityAd: template.availabilityAd || availabilityAd,
+      vcnId: template.vcnId || vcnId,
+      shape: template.shape || shape
+    });
+  }
+
+  async function saveCurrentAsTemplate() {
+    setIsSavingTemplate(true);
+    setErrorMessage("");
+    setResultMessage("");
+    try {
+      const templateName = isTemplateMode ? name.trim() : window.prompt("模板名称", name ? `${name} 模板` : `${shape} 模板`);
+      if (!templateName) return;
+      const payload = buildTemplatePayload(templateName);
+      const saved = editTemplateId ? await updateTemplate(editTemplateId, payload) : await createTemplate(payload);
+      setTemplates((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
+      setSelectedTemplateId(saved.id);
+      setAppliedTemplate(saved);
+      setResultMessage(`${editTemplateId ? "已更新" : "已保存"}模板 ${saved.name}。`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "保存模板失败");
+    } finally {
+      setIsSavingTemplate(false);
+    }
+  }
+
+  function buildTemplatePayload(templateName: string) {
+    const tags = compactTags({
+      owner: ownerTag,
+      purpose: purposeTag,
+      managedBy: "oci-lifecycle-platform"
+    });
+    const config = {
+      instance: {
+        name
+      },
+      context: {
+        profileId,
+        region,
+        compartment: selectedCompartment || compartmentId,
+        compartmentId,
+        availabilityAd
+      },
+      imageAndShape: {
+        imageId,
+        imageName: optionLabel(options?.images, imageId),
+        shape,
+        ocpus,
+        memoryGb,
+        bootVolumeGb,
+        bootVolumeVpusPerGb
+      },
+      networkAndAccess: {
+        vcnId,
+        subnetId,
+        assignPublicIp,
+        enableIpv6,
+        reservedPublicIp,
+        sshKey,
+        cloudInit
+      },
+      tags
+    };
+    return {
+        name: templateName,
+        description: isTemplateMode ? "从创建模板向导保存的预输入模板" : "从创建实例页面保存的预输入模板",
+        version: "v1",
+        profileId,
+        region,
+        compartment: selectedCompartment || compartmentId,
+        compartmentId,
+        availabilityAd,
+        imageId,
+        imageName: optionLabel(options?.images, imageId),
+        shape,
+        ocpus,
+        memoryGb,
+        bootVolumeGb,
+        bootVolumeVpusPerGb,
+        vcnId,
+        subnetId,
+        assignPublicIp,
+        enableIpv6,
+        reservedPublicIp,
+        sshKey,
+        cloudInit,
+        tags,
+        configFormat: "json",
+        configText: JSON.stringify(config, null, 2),
+        status: "ACTIVE"
+    };
   }
 
   function updateOcpus(value: number) {
@@ -237,6 +380,10 @@ export function CreateInstancePage() {
   }
 
   async function handleSubmit() {
+    if (isTemplateMode) {
+      await saveCurrentAsTemplate();
+      return;
+    }
     setIsSubmitting(true);
     setResultMessage("");
     setErrorMessage("");
@@ -244,6 +391,7 @@ export function CreateInstancePage() {
       const retryDelay = retryDelayBounds();
       const result = await createInstanceTask({
         name,
+        templateId: appliedTemplate?.id || selectedTemplateId || undefined,
         profileId,
         region,
         compartment: selectedCompartment || compartmentId,
@@ -289,9 +437,13 @@ export function CreateInstancePage() {
   return (
     <div className="page-stack">
       <PageHeader
-        eyebrow="创建"
-        title="创建 OCI 实例"
-        description="从真实 OCI Profile 和 Launch Options 选择参数，提交后由后端任务系统执行 LaunchInstance。"
+        eyebrow={isTemplateMode ? "模板" : "创建"}
+        title={isTemplateMode ? "新建 OCI 实例模板" : "创建 OCI 实例"}
+        description={
+          isTemplateMode
+            ? "复用创建实例的真实选项：上下文、镜像规格、网络访问和公网/IPv6 开关。配置会在后端保存为内部 JSON，不调用 OCI 创建机器。"
+            : "从真实 OCI Profile 和 Launch Options 选择参数，提交后由后端任务系统执行 LaunchInstance。"
+        }
       />
 
       <section className="wizard-layout">
@@ -302,11 +454,11 @@ export function CreateInstancePage() {
               <div className="section-title-row">
                 <div>
                   <h2>真实创建参数</h2>
-                  <p>选择上下文后刷新真实 OCI 选项；没有密钥或权限时会显示后端返回的真实错误。</p>
+                  <p>选择上下文后刷新可用选项；没有密钥或权限时会显示后端返回的真实错误。</p>
                 </div>
                 <button className="secondary-button" disabled={isRefreshingOptions} onClick={() => void refreshRealOptions()}>
                   <RefreshCw size={18} />
-                  {isRefreshingOptions ? "刷新中..." : "刷新真实选项"}
+                  {isRefreshingOptions ? "刷新中..." : "刷新选项"}
                 </button>
               </div>
 
@@ -318,6 +470,65 @@ export function CreateInstancePage() {
               ) : null}
               {options.verified ? (
                 <div className="inline-success">已从 OCI 同步 {options.requestIds?.length ?? 0} 个请求结果，时间 {formatTime(options.lastSyncedAt)}</div>
+              ) : null}
+
+              {!isTemplateMode ? (
+              <div className="form-section">
+                <div className="form-section-title">
+                  <ClipboardList size={18} />
+                  <span>模板预输入</span>
+                </div>
+                <div className="template-prefill-row">
+                  <label>
+                    选择模板
+                    <select
+                      value={selectedTemplateId}
+                      onChange={(event) => {
+                        setSelectedTemplateId(event.target.value);
+                        setAppliedTemplate(null);
+                      }}
+                    >
+                      <option value="">不使用模板</option>
+                      {templates.map((template) => (
+                        <option value={template.id} key={template.id}>
+                          {template.name} / {template.shape} / {template.region || "未指定区域"}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    className="secondary-button"
+                    disabled={!selectedTemplateId}
+                    onClick={() => {
+                      const template = templates.find((item) => item.id === selectedTemplateId);
+                      if (template) applyTemplate(template);
+                    }}
+                  >
+                    应用模板
+                  </button>
+                  <button
+                    className="secondary-button"
+                    disabled={!selectedTemplateId && !appliedTemplate}
+                    onClick={() => {
+                      setSelectedTemplateId("");
+                      setAppliedTemplate(null);
+                    }}
+                  >
+                    清空模板
+                  </button>
+                  <button className="secondary-button" disabled={isSavingTemplate || !shape || !profileId} onClick={() => void saveCurrentAsTemplate()}>
+                    <Save size={18} />
+                    {isSavingTemplate ? "保存中..." : "保存当前配置为模板"}
+                  </button>
+                </div>
+                <div className="modal-warning">
+                  <ClipboardList size={18} />
+                  <span>
+                    模板只会预填当前创建表单，不会调用 OCI API。最终创建机器仍以你点击“创建实例任务”时的表单参数为准。
+                    {appliedTemplate ? ` 当前已应用：${appliedTemplate.name}` : ""}
+                  </span>
+                </div>
+              </div>
               ) : null}
 
               <div className="form-section">
@@ -367,7 +578,9 @@ export function CreateInstancePage() {
                         ))}
                       </select>
                     ) : (
-                      <input value={region} onChange={(event) => setRegion(event.target.value)} placeholder="ap-chuncheon-1" />
+                      <select value={region} disabled={isTemplateMode}>
+                        <option value="">{isTemplateMode ? "请先选择可用 Profile 并刷新选项" : "暂无可用 Region"}</option>
+                      </select>
                     )}
                   </label>
                   <label>
@@ -388,7 +601,9 @@ export function CreateInstancePage() {
                         ))}
                       </select>
                     ) : (
-                      <input value={compartmentId} onChange={(event) => setCompartmentId(event.target.value)} placeholder="留空使用 tenancy OCID" />
+                      <select value={compartmentId} disabled={isTemplateMode}>
+                        <option value="">{isTemplateMode ? "请先刷新真实 Compartment 选项" : "暂无可用 Compartment"}</option>
+                      </select>
                     )}
                   </label>
                   <label>
@@ -409,7 +624,9 @@ export function CreateInstancePage() {
                         ))}
                       </select>
                     ) : (
-                      <input value={availabilityAd} onChange={(event) => setAvailabilityAd(event.target.value)} placeholder="可留空自动发现" />
+                      <select value={availabilityAd} disabled={isTemplateMode}>
+                        <option value="">{isTemplateMode ? "请先刷新真实 AD 选项" : "暂无可用 AD"}</option>
+                      </select>
                     )}
                   </label>
                 </div>
@@ -423,8 +640,8 @@ export function CreateInstancePage() {
                 </div>
                 <div className="form-grid create-spec-grid">
                   <label>
-                    实例名称
-                    <input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：oci-worker-01" />
+                    {isTemplateMode ? "模板名称" : "实例名称"}
+                    <input value={name} onChange={(event) => setName(event.target.value)} placeholder={isTemplateMode ? "例如：韩国 E3 Flex 1C1G" : "例如：oci-worker-01"} />
                   </label>
                   <label className="span-two">
                     Image
@@ -438,7 +655,9 @@ export function CreateInstancePage() {
                         ))}
                       </select>
                     ) : (
-                      <input value={imageId} onChange={(event) => setImageId(event.target.value)} placeholder="可留空自动发现兼容镜像" />
+                      <select value={imageId} disabled={isTemplateMode}>
+                        <option value="">{isTemplateMode ? "请先刷新真实兼容镜像选项" : "暂无兼容镜像"}</option>
+                      </select>
                     )}
                     {isRefreshingOptions ? <span className="label-hint label-hint-left">正在刷新兼容镜像...</span> : null}
                   </label>
@@ -454,12 +673,9 @@ export function CreateInstancePage() {
                         ))}
                       </select>
                     ) : (
-                      <input
-                        value={shape}
-                        onBlur={() => void refreshLaunchOptionsForContext({ shape })}
-                        onChange={(event) => setShape(event.target.value)}
-                        placeholder="VM.Standard.E3.Flex"
-                      />
+                      <select value={shape} disabled={isTemplateMode}>
+                        <option value="">{isTemplateMode ? "请先刷新真实 Shape 选项" : "暂无可用 Shape"}</option>
+                      </select>
                     )}
                   </label>
                   <label>
@@ -467,28 +683,48 @@ export function CreateInstancePage() {
                       <span>OCPU</span>
                       {selectedShape ? <span className="label-hint">{shapeRangeHint(selectedShape.minOcpus, selectedShape.maxOcpus, isOcpuFrozen)}</span> : null}
                     </span>
-                    <input
-                      type="number"
-                      min={selectedShape?.minOcpus || 1}
-                      max={selectedShape?.maxOcpus || undefined}
-                      value={ocpus}
-                      disabled={isOcpuFrozen}
-                      onChange={(event) => updateOcpus(Number(event.target.value))}
-                    />
+                    {isTemplateMode ? (
+                      <select value={ocpus} disabled={!selectedShape || isOcpuFrozen} onChange={(event) => updateOcpus(Number(event.target.value))}>
+                        {boundedIntegerOptions(selectedShape?.minOcpus, selectedShape?.maxOcpus, ocpus).map((value) => (
+                          <option value={value} key={value}>
+                            {value} OCPU
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="number"
+                        min={selectedShape?.minOcpus || 1}
+                        max={selectedShape?.maxOcpus || undefined}
+                        value={ocpus}
+                        disabled={isOcpuFrozen}
+                        onChange={(event) => updateOcpus(Number(event.target.value))}
+                      />
+                    )}
                   </label>
                   <label>
                     <span className="label-row">
                       <span>内存 GB</span>
                       {selectedShape ? <span className="label-hint">{shapeRangeHint(selectedShape.minMemoryGb, selectedShape.maxMemoryGb, isMemoryFrozen)}</span> : null}
                     </span>
-                    <input
-                      type="number"
-                      min={selectedShape?.minMemoryGb || 1}
-                      max={selectedShape?.maxMemoryGb || undefined}
-                      value={memoryGb}
-                      disabled={isMemoryFrozen}
-                      onChange={(event) => updateMemoryGb(Number(event.target.value))}
-                    />
+                    {isTemplateMode ? (
+                      <select value={memoryGb} disabled={!selectedShape || isMemoryFrozen} onChange={(event) => updateMemoryGb(Number(event.target.value))}>
+                        {boundedIntegerOptions(selectedShape?.minMemoryGb, selectedShape?.maxMemoryGb, memoryGb).map((value) => (
+                          <option value={value} key={value}>
+                            {value} GB
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="number"
+                        min={selectedShape?.minMemoryGb || 1}
+                        max={selectedShape?.maxMemoryGb || undefined}
+                        value={memoryGb}
+                        disabled={isMemoryFrozen}
+                        onChange={(event) => updateMemoryGb(Number(event.target.value))}
+                      />
+                    )}
                   </label>
                   <div className="disk-config-field">
                     <label>
@@ -496,7 +732,17 @@ export function CreateInstancePage() {
                         <span>启动盘 GB</span>
                         <span className="label-hint">{bootVolumeUsageLabel}</span>
                       </span>
-                      <input type="number" min={50} value={bootVolumeGb} onChange={(event) => setBootVolumeGb(Number(event.target.value))} />
+                      {isTemplateMode ? (
+                        <select value={bootVolumeGb} onChange={(event) => setBootVolumeGb(Number(event.target.value))}>
+                          {templateBootVolumeOptions(bootVolumeGb).map((value) => (
+                            <option value={value} key={value}>
+                              {value} GB
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input type="number" min={50} value={bootVolumeGb} onChange={(event) => setBootVolumeGb(Number(event.target.value))} />
+                      )}
                     </label>
                     <label>
                       <span className="label-row">
@@ -540,7 +786,9 @@ export function CreateInstancePage() {
                         ))}
                       </select>
                     ) : (
-                      <input value={vcnId} onChange={(event) => setVcnId(event.target.value)} placeholder="可留空自动选择" />
+                      <select value={vcnId} disabled={isTemplateMode}>
+                        <option value="">{isTemplateMode ? "请先刷新真实 VCN 选项" : "暂无可用 VCN"}</option>
+                      </select>
                     )}
                   </label>
                   <label>
@@ -562,7 +810,9 @@ export function CreateInstancePage() {
                         ))}
                       </select>
                     ) : (
-                      <input value={subnetId} onChange={(event) => setSubnetId(event.target.value)} placeholder="可留空自动选择第一个可用子网" />
+                      <select value={subnetId} disabled={isTemplateMode}>
+                        <option value="">{isTemplateMode ? "请先刷新真实 Subnet 选项" : "暂无可用 Subnet"}</option>
+                      </select>
                     )}
                   </label>
                   <label>
@@ -577,16 +827,32 @@ export function CreateInstancePage() {
                         ))}
                       </select>
                     ) : (
-                      <input value={reservedPublicIp} onChange={(event) => setReservedPublicIp(event.target.value)} placeholder="暂无可用保留公网 IP" />
+                      <select value={reservedPublicIp} disabled={isTemplateMode}>
+                        <option value="">不绑定保留公网 IP</option>
+                      </select>
                     )}
                   </label>
                   <label>
                     SSH 公钥
-                    <input value={sshKey} onChange={(event) => setSshKey(event.target.value)} placeholder="ssh-ed25519 AAAA..." />
+                    {isTemplateMode ? (
+                      <select value={sshKey ? "keep" : ""} onChange={(event) => event.target.value === "" && setSshKey("")}>
+                        <option value="">创建实例时填写，模板不保存 SSH 公钥</option>
+                        {sshKey ? <option value="keep">保留模板内已保存 SSH 公钥</option> : null}
+                      </select>
+                    ) : (
+                      <input value={sshKey} onChange={(event) => setSshKey(event.target.value)} placeholder="ssh-ed25519 AAAA..." />
+                    )}
                   </label>
                   <label>
                     cloud-init
-                    <input value={cloudInit} onChange={(event) => setCloudInit(event.target.value)} placeholder="#cloud-config 或启动脚本摘要" />
+                    {isTemplateMode ? (
+                      <select value={cloudInit ? "keep" : ""} onChange={(event) => event.target.value === "" && setCloudInit("")}>
+                        <option value="">创建实例时填写，模板不保存 cloud-init</option>
+                        {cloudInit ? <option value="keep">保留模板内已保存 cloud-init</option> : null}
+                      </select>
+                    ) : (
+                      <input value={cloudInit} onChange={(event) => setCloudInit(event.target.value)} placeholder="#cloud-config 或启动脚本摘要" />
+                    )}
                   </label>
                 </div>
               </div>
@@ -606,45 +872,49 @@ export function CreateInstancePage() {
                   </div>
                   <button className={`toggle-switch ${enableIpv6 ? "on" : ""}`} onClick={() => setEnableIpv6((value) => !value)} />
                 </div>
-                <div className="switch-row">
-                  <div>
-                    <strong>需要审批</strong>
-                    <p>当前阶段写入保护标记；后续会接入正式审批流。</p>
-                  </div>
-                  <button className={`toggle-switch ${requireApproval ? "on" : ""}`} onClick={() => setRequireApproval((value) => !value)} />
-                </div>
-                <div className="switch-row">
-                  <div>
-                    <strong>记录操作快照</strong>
-                    <p>把创建参数写入任务输入和审计日志，便于失败排查。</p>
-                  </div>
-                  <button className={`toggle-switch ${snapshotBefore ? "on" : ""}`} onClick={() => setSnapshotBefore((value) => !value)} />
-                </div>
-                <div className={`switch-row ${isRootTenancy ? "warning-row" : ""}`}>
-                  <div>
-                    <strong>Root tenancy 随机 root 密码</strong>
-                    <p>
-                      {isRootTenancy
-                        ? "当前选择 Root tenancy，提交后后端会生成随机 root 密码并通过 cloud-init 设置。"
-                        : "仅在选择 Root tenancy 时生效；普通 compartment 不会自动生成 root 密码。"}
-                    </p>
-                  </div>
-                  <button
-                    className={`toggle-switch ${isRootTenancy && generateRootPassword ? "on" : ""}`}
-                    disabled={!isRootTenancy}
-                    onClick={() => setGenerateRootPassword((value) => !value)}
-                  />
-                </div>
-                <div className="switch-row">
-                  <div>
-                    <strong>推送 root 密码通知</strong>
-                    <p>生成密码后写入站内敏感通知；邮件服务启用时会同步推送邮件。</p>
-                  </div>
-                  <button className={`toggle-switch ${notifyRootPassword ? "on" : ""}`} onClick={() => setNotifyRootPassword((value) => !value)} />
-                </div>
+                {!isTemplateMode ? (
+                  <>
+                    <div className="switch-row">
+                      <div>
+                        <strong>需要审批</strong>
+                        <p>当前阶段写入保护标记；后续会接入正式审批流。</p>
+                      </div>
+                      <button className={`toggle-switch ${requireApproval ? "on" : ""}`} onClick={() => setRequireApproval((value) => !value)} />
+                    </div>
+                    <div className="switch-row">
+                      <div>
+                        <strong>记录操作快照</strong>
+                        <p>把创建参数写入任务输入和审计日志，便于失败排查。</p>
+                      </div>
+                      <button className={`toggle-switch ${snapshotBefore ? "on" : ""}`} onClick={() => setSnapshotBefore((value) => !value)} />
+                    </div>
+                    <div className={`switch-row ${isRootTenancy ? "warning-row" : ""}`}>
+                      <div>
+                        <strong>Root tenancy 随机 root 密码</strong>
+                        <p>
+                          {isRootTenancy
+                            ? "当前选择 Root tenancy，提交后后端会生成随机 root 密码并通过 cloud-init 设置。"
+                            : "仅在选择 Root tenancy 时生效；普通 compartment 不会自动生成 root 密码。"}
+                        </p>
+                      </div>
+                      <button
+                        className={`toggle-switch ${isRootTenancy && generateRootPassword ? "on" : ""}`}
+                        disabled={!isRootTenancy}
+                        onClick={() => setGenerateRootPassword((value) => !value)}
+                      />
+                    </div>
+                    <div className="switch-row">
+                      <div>
+                        <strong>推送 root 密码通知</strong>
+                        <p>生成密码后写入站内敏感通知；邮件服务启用时会同步推送邮件。</p>
+                      </div>
+                      <button className={`toggle-switch ${notifyRootPassword ? "on" : ""}`} onClick={() => setNotifyRootPassword((value) => !value)} />
+                    </div>
+                  </>
+                ) : null}
               </div>
 
-              <div className="form-section">
+              {!isTemplateMode ? <div className="form-section">
                 <div className="form-section-title">
                   <Tags size={18} />
                   <span>标签与重试</span>
@@ -714,25 +984,29 @@ export function CreateInstancePage() {
                     </div>
                   ) : null}
                 </div>
-              </div>
+              </div> : null}
 
               <div className="preflight-card">
                 <strong>
-                  <ShieldCheck size={16} /> 提交说明
+                  <ShieldCheck size={16} /> {isTemplateMode ? "保存说明" : "提交说明"}
                 </strong>
-                <p>OCI 模式会创建真实 LaunchInstance 任务。没有密钥或权限时，任务会失败并保留真实错误码。</p>
+                <p>
+                  {isTemplateMode
+                    ? "保存模板只会写入由当前真实选项生成的内部 JSON 预输入配置，不创建实例、不调用 OCI API。后续使用模板创建机器时才进入真实任务。"
+                    : "OCI 模式会创建真实 LaunchInstance 任务。没有密钥或权限时，任务会失败并保留真实错误码。"}
+                </p>
               </div>
 
               {resultMessage ? (
                 <div className="inline-success">
-                  {resultMessage} <Link className="link-button" to="/jobs">查看任务中心</Link>
+                  {resultMessage} <Link className="link-button" to={isTemplateMode ? "/templates" : "/jobs"}>{isTemplateMode ? "查看模板管理" : "查看任务中心"}</Link>
                 </div>
               ) : null}
               {errorMessage ? <div className="inline-error">{errorMessage}</div> : null}
 
               <div className="button-row">
                 <button className="primary-button" disabled={isSubmitting || isRefreshingOptions || !profileId || !name || !shape} onClick={handleSubmit}>
-                  {isSubmitting ? "提交中..." : "创建实例任务"}
+                  {isSubmitting || isSavingTemplate ? (isTemplateMode ? "保存中..." : "提交中...") : isTemplateMode ? editTemplateId ? "更新模板" : "创建模板" : "创建实例任务"}
                 </button>
               </div>
             </>
@@ -856,7 +1130,7 @@ function ShapeHint({ shape }: { shape: ShapeOption }) {
         {shape.name}
         {isAlwaysFreeShape(shape.name) ? <strong className="free-badge">Free</strong> : null}
         {shape.arch === "selection-preserved" ? (
-          <>：刷新结果未返回该 Shape，已保留当前选择。请刷新真实选项或检查区域/AD。</>
+          <>：刷新结果未返回该 Shape，已保留当前选择。请刷新选项或检查区域/AD。</>
         ) : (
           <>：OCPU {rangeLabel(shape.minOcpus, shape.maxOcpus)}，内存 {rangeLabel(shape.minMemoryGb, shape.maxMemoryGb)} GB，处理器 {shape.arch}</>
         )}
@@ -941,6 +1215,24 @@ function clampShapeValue(value: number, min?: number, max?: number) {
   const safeMax = Number.isFinite(max) && Number(max) > 0 ? Number(max) : undefined;
   if (safeMax !== undefined && safeMin === safeMax) return safeMin;
   return Math.min(Math.max(safeValue, safeMin), safeMax ?? Number.MAX_SAFE_INTEGER);
+}
+
+function boundedIntegerOptions(min: number | undefined, max: number | undefined, current: number) {
+  const safeCurrent = Number.isFinite(current) && current > 0 ? Math.floor(current) : 1;
+  const safeMin = Number.isFinite(min) && Number(min) > 0 ? Math.floor(Number(min)) : safeCurrent;
+  const safeMax = Number.isFinite(max) && Number(max) > 0 ? Math.floor(Number(max)) : safeCurrent;
+  const lower = Math.min(safeMin, safeMax, safeCurrent);
+  const upper = Math.max(safeMin, safeMax, safeCurrent);
+  const values: number[] = [];
+  for (let value = lower; value <= upper; value += 1) {
+    values.push(value);
+  }
+  return values.length > 0 ? values : [safeCurrent];
+}
+
+function templateBootVolumeOptions(current: number) {
+  const safeCurrent = Number.isFinite(current) && current >= 50 ? Math.floor(current) : 50;
+  return Array.from(new Set([...TEMPLATE_BOOT_VOLUME_OPTIONS, safeCurrent])).filter((value) => value >= 50).sort((a, b) => a - b);
 }
 
 function shapeRangeHint(min: number, max: number, frozen: boolean) {
@@ -1166,6 +1458,18 @@ function rangeLabel(min: number, max: number) {
 function optionLabel(options: LaunchOption[] | undefined, id: string) {
   if (!id || !options) return "";
   return options.find((item) => item.id === id)?.label ?? "";
+}
+
+function templateInstanceName(template: InstanceTemplate) {
+  const configText = template.configText?.trim();
+  if (!configText || template.configFormat !== "json") return "";
+  try {
+    const parsed = JSON.parse(configText) as { instance?: { name?: unknown }; instanceName?: unknown };
+    const value = parsed.instance?.name ?? parsed.instanceName;
+    return typeof value === "string" ? value.trim() : "";
+  } catch {
+    return "";
+  }
 }
 
 function compactTags(tags: Record<string, string>) {

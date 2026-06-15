@@ -131,7 +131,24 @@ func TestListInstances(t *testing.T) {
 }
 
 func TestListTemplates(t *testing.T) {
-	ts := newTestServer()
+	s := store.New()
+	ts := NewServer(s).Handler()
+	createRes := postJSON(t, ts, "/api/templates", map[string]any{
+		"name":           "E2 Micro 预输入",
+		"profileId":      "profile-default",
+		"region":         "ap-chuncheon-1",
+		"shape":          "VM.Standard.E2.1.Micro",
+		"ocpus":          1,
+		"memoryGb":       1,
+		"bootVolumeGb":   50,
+		"assignPublicIp": true,
+		"tags": map[string]string{
+			"managedBy": "oci-lifecycle-platform",
+		},
+	})
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("expected template create 201, got %d body=%s", createRes.Code, createRes.Body.String())
+	}
 	res := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/templates", nil)
 
@@ -153,14 +170,77 @@ func TestListTemplates(t *testing.T) {
 		t.Fatal("expected templates")
 	}
 	for _, item := range body.Items {
-		if item.ID == "" || item.ImageID == "" || item.Shape == "" || item.Status != "Active" {
+		if item.ID == "" || item.Shape == "" || item.Status != "ACTIVE" {
 			t.Fatalf("unexpected template: %#v", item)
 		}
 	}
 }
 
+func TestTemplateCanBeSavedWithoutOCIProfileAndLocallyChecked(t *testing.T) {
+	ts := NewServer(store.New()).Handler()
+	createRes := postJSON(t, ts, "/api/templates", map[string]any{
+		"name":         "无 Profile 预输入",
+		"shape":        "VM.Standard.E3.Flex",
+		"ocpus":        1,
+		"memoryGb":     1,
+		"bootVolumeGb": 50,
+	})
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("expected template create 201, got %d body=%s", createRes.Code, createRes.Body.String())
+	}
+	var created struct {
+		ID                 string `json:"id"`
+		ProfileID          string `json:"profileId"`
+		ValidationStatus   string `json:"validationStatus"`
+		ValidationErrorMsg string `json:"validationMessage"`
+	}
+	decodeTestJSON(t, createRes.Body.Bytes(), &created)
+	if created.ID == "" || created.ProfileID != "" {
+		t.Fatalf("expected template without profile to be saved, got %#v", created)
+	}
+
+	validateRes := postJSON(t, ts, "/api/templates/"+created.ID+"/validate", map[string]any{})
+	if validateRes.Code != http.StatusOK {
+		t.Fatalf("expected local validation 200, got %d body=%s", validateRes.Code, validateRes.Body.String())
+	}
+	var validation struct {
+		Verified         bool     `json:"verified"`
+		Status           string   `json:"status"`
+		ErrorCode        string   `json:"errorCode"`
+		IncompatibleKeys []string `json:"incompatibleKeys"`
+	}
+	decodeTestJSON(t, validateRes.Body.Bytes(), &validation)
+	if validation.Verified || validation.Status != "INVALID" || validation.ErrorCode != "TEMPLATE_FIELDS_INCOMPLETE" {
+		t.Fatalf("expected incomplete local validation, got %#v", validation)
+	}
+	if len(validation.IncompatibleKeys) == 0 {
+		t.Fatalf("expected missing fields to be listed, got %#v", validation)
+	}
+}
+
 func TestLaunchOptions(t *testing.T) {
-	ts := newTestServer()
+	s := store.New()
+	if _, err := s.CreateProfile(domain.CreateProfileRequest{
+		Name:          "DEFAULT",
+		TenancyOCID:   "ocid1.tenancy.oc1..example",
+		UserOCID:      "ocid1.user.oc1..example",
+		Fingerprint:   "11:22:33",
+		DefaultRegion: "ap-chuncheon-1",
+	}, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTemplate(domain.CreateTemplateRequest{
+		Name:         "E2 Micro 预输入",
+		ProfileID:    "profile-default",
+		Region:       "ap-chuncheon-1",
+		Shape:        "VM.Standard.E2.1.Micro",
+		OCPUs:        1,
+		MemoryGB:     1,
+		BootVolumeGB: 50,
+	}, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	ts := NewServer(s).Handler()
 	res := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/launch-options", nil)
 

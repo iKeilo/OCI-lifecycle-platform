@@ -164,23 +164,39 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE TABLE IF NOT EXISTS instance_templates (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
   version TEXT NOT NULL,
   profile_id TEXT NOT NULL,
   region TEXT NOT NULL,
   compartment TEXT NOT NULL,
+  compartment_id TEXT NOT NULL DEFAULT '',
+  availability_ad TEXT NOT NULL DEFAULT '',
   image_id TEXT NOT NULL,
   image_name TEXT NOT NULL,
   shape TEXT NOT NULL,
   ocpus INTEGER NOT NULL,
   memory_gb INTEGER NOT NULL,
   boot_volume_gb INTEGER NOT NULL,
+  boot_volume_vpus_per_gb INTEGER NOT NULL DEFAULT 10,
   vcn_id TEXT NOT NULL,
   subnet_id TEXT NOT NULL,
   assign_public_ip BOOLEAN NOT NULL DEFAULT false,
+  enable_ipv6 BOOLEAN NOT NULL DEFAULT false,
+  reserved_public_ip TEXT NOT NULL DEFAULT '',
+  ssh_key TEXT NOT NULL DEFAULT '',
+  cloud_init TEXT NOT NULL DEFAULT '',
+  cloud_init_set BOOLEAN NOT NULL DEFAULT false,
   tags JSONB NOT NULL DEFAULT '{}'::jsonb,
+  config_format TEXT NOT NULL DEFAULT 'json',
+  config_text TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL,
+  validation_status TEXT NOT NULL DEFAULT 'UNVERIFIED',
+  validation_error_code TEXT NOT NULL DEFAULT '',
+  validation_message TEXT NOT NULL DEFAULT '',
+  last_validated_at TIMESTAMPTZ,
   created_by TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS automations (
@@ -218,6 +234,23 @@ CREATE INDEX IF NOT EXISTS idx_instances_status ON instances(status);
 ALTER TABLE instances ADD COLUMN IF NOT EXISTS primary_ipv6 TEXT NOT NULL DEFAULT '';
 ALTER TABLE instances ADD COLUMN IF NOT EXISTS ipv6_addresses JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE instances ADD COLUMN IF NOT EXISTS boot_volume_vpus_per_gb INTEGER NOT NULL DEFAULT 10;
+
+ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS compartment_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS availability_ad TEXT NOT NULL DEFAULT '';
+ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS boot_volume_vpus_per_gb INTEGER NOT NULL DEFAULT 10;
+ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS enable_ipv6 BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS reserved_public_ip TEXT NOT NULL DEFAULT '';
+ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS ssh_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS cloud_init TEXT NOT NULL DEFAULT '';
+ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS cloud_init_set BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS config_format TEXT NOT NULL DEFAULT 'json';
+ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS config_text TEXT NOT NULL DEFAULT '';
+ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS validation_status TEXT NOT NULL DEFAULT 'UNVERIFIED';
+ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS validation_error_code TEXT NOT NULL DEFAULT '';
+ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS validation_message TEXT NOT NULL DEFAULT '';
+ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS last_validated_at TIMESTAMPTZ;
+ALTER TABLE instance_templates ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 `
 
 const seedMigrationSQL = `

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -73,6 +74,15 @@ type settingsReader interface {
 	GetAccountSettings() (domain.AccountSettings, error)
 	GetAppearanceSettings() (domain.AppearanceSettings, error)
 	GetBudgetSettings() (domain.BudgetSettings, error)
+}
+
+type templateSink interface {
+	SaveTemplate(template domain.InstanceTemplate) error
+	DeleteTemplate(templateID string) error
+}
+
+type templateReader interface {
+	ListTemplates() ([]domain.InstanceTemplate, error)
 }
 
 func New() *Store {
@@ -204,74 +214,6 @@ func NewSeeded() *Store {
 		s.instances[instance.ID] = instance
 	}
 
-	for _, template := range []domain.InstanceTemplate{
-		{
-			ID:             "tpl-ubuntu-a1-small-v1",
-			Name:           "Ubuntu A1 小型实例",
-			Version:        "v1",
-			ProfileID:      "profile-default",
-			Region:         "ap-singapore-1",
-			Compartment:    "production",
-			ImageID:        "ocid1.image.oc1.ap-singapore-1.ubuntu2204",
-			ImageName:      "Canonical Ubuntu 22.04",
-			Shape:          "VM.Standard.A1.Flex",
-			OCPUs:          1,
-			MemoryGB:       6,
-			BootVolumeGB:   80,
-			VCNID:          "vcn-production",
-			SubnetID:       "subnet-public-a",
-			AssignPublicIP: true,
-			Tags:           map[string]string{"owner": "ops", "purpose": "compute"},
-			Status:         "Active",
-			CreatedBy:      "system",
-			CreatedAt:      now.Add(-7 * 24 * time.Hour),
-		},
-		{
-			ID:             "tpl-oracle-micro-v1",
-			Name:           "Oracle Linux 微型实例",
-			Version:        "v1",
-			ProfileID:      "profile-default",
-			Region:         "ap-singapore-1",
-			Compartment:    "development",
-			ImageID:        "ocid1.image.oc1.ap-singapore-1.oraclelinux9",
-			ImageName:      "Oracle Linux 9",
-			Shape:          "VM.Standard.E2.1.Micro",
-			OCPUs:          1,
-			MemoryGB:       1,
-			BootVolumeGB:   50,
-			VCNID:          "vcn-development",
-			SubnetID:       "subnet-public-a",
-			AssignPublicIP: true,
-			Tags:           map[string]string{"owner": "dev", "purpose": "test"},
-			Status:         "Active",
-			CreatedBy:      "system",
-			CreatedAt:      now.Add(-5 * 24 * time.Hour),
-		},
-		{
-			ID:             "tpl-edge-flex-v1",
-			Name:           "边缘服务 Flex 实例",
-			Version:        "v1",
-			ProfileID:      "profile-capacity-lab",
-			Region:         "ap-seoul-1",
-			Compartment:    "edge",
-			ImageID:        "ocid1.image.oc1.ap-seoul-1.ubuntu2204",
-			ImageName:      "Canonical Ubuntu 22.04",
-			Shape:          "VM.Standard3.Flex",
-			OCPUs:          2,
-			MemoryGB:       16,
-			BootVolumeGB:   100,
-			VCNID:          "vcn-edge",
-			SubnetID:       "subnet-public-a",
-			AssignPublicIP: true,
-			Tags:           map[string]string{"owner": "edge", "purpose": "gateway"},
-			Status:         "Active",
-			CreatedBy:      "system",
-			CreatedAt:      now.Add(-3 * 24 * time.Hour),
-		},
-	} {
-		s.templates[template.ID] = template
-	}
-
 	s.automations["auto-a1-capacity"] = domain.AutomationRule{
 		ID:              "auto-a1-capacity",
 		Name:            "A1 容量自动创建",
@@ -366,6 +308,21 @@ func (s *Store) ReplaceJobs(jobs []domain.Job) {
 		next[job.ID] = job
 	}
 	s.jobs = next
+}
+
+func (s *Store) ReplaceTemplates(templates []domain.InstanceTemplate) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	next := make(map[string]domain.InstanceTemplate, len(templates))
+	for _, template := range templates {
+		template = normalizeTemplate(template, s.now().UTC())
+		if strings.TrimSpace(template.ID) == "" {
+			continue
+		}
+		next[template.ID] = template
+	}
+	s.templates = next
 }
 
 func (s *Store) ReplaceAuditLogs(entries []domain.AuditLog) {
@@ -586,10 +543,54 @@ func (s *Store) GetInstance(id string) (domain.Instance, bool) {
 }
 
 func (s *Store) ListTemplates() []domain.InstanceTemplate {
+	return s.listTemplatesFiltered(domain.TemplateFilter{})
+}
+
+func (s *Store) ListTemplatesFiltered(filter domain.TemplateFilter) []domain.InstanceTemplate {
+	return s.listTemplatesFiltered(filter)
+}
+
+func (s *Store) listTemplatesFiltered(filter domain.TemplateFilter) []domain.InstanceTemplate {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	templates := make([]domain.InstanceTemplate, 0, len(s.templates))
 	for _, template := range s.templates {
+		if !filter.IncludeDeleted && strings.EqualFold(template.Status, "deleted") {
+			continue
+		}
+		if strings.TrimSpace(filter.ProfileID) != "" && !strings.EqualFold(template.ProfileID, filter.ProfileID) {
+			continue
+		}
+		if strings.TrimSpace(filter.Region) != "" && !strings.EqualFold(template.Region, filter.Region) {
+			continue
+		}
+		if strings.TrimSpace(filter.CompartmentID) != "" && !strings.EqualFold(template.CompartmentID, filter.CompartmentID) {
+			continue
+		}
+		if strings.TrimSpace(filter.Status) != "" && !strings.EqualFold(template.Status, filter.Status) {
+			continue
+		}
+		if strings.TrimSpace(filter.ValidationStatus) != "" && !strings.EqualFold(template.ValidationStatus, filter.ValidationStatus) {
+			continue
+		}
+		if strings.TrimSpace(filter.Query) != "" {
+			query := strings.ToLower(strings.TrimSpace(filter.Query))
+			haystack := strings.ToLower(strings.Join([]string{
+				template.ID,
+				template.Name,
+				template.Description,
+				template.Version,
+				template.Region,
+				template.Compartment,
+				template.CompartmentID,
+				template.ImageName,
+				template.ImageID,
+				template.Shape,
+			}, " "))
+			if !strings.Contains(haystack, query) {
+				continue
+			}
+		}
 		templates = append(templates, template)
 	}
 	sort.Slice(templates, func(i, j int) bool {
@@ -598,7 +599,121 @@ func (s *Store) ListTemplates() []domain.InstanceTemplate {
 		}
 		return templates[i].Region < templates[j].Region
 	})
+	if filter.Limit > 0 && filter.Limit < len(templates) {
+		templates = templates[:filter.Limit]
+	}
 	return templates
+}
+
+func (s *Store) GetTemplate(id string) (domain.InstanceTemplate, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	template, ok := s.templates[id]
+	return template, ok
+}
+
+func (s *Store) CreateTemplate(req domain.CreateTemplateRequest, actor string) (domain.InstanceTemplate, error) {
+	template, err := templateFromCreateRequest(req)
+	if err != nil {
+		return domain.InstanceTemplate{}, err
+	}
+	template.CreatedBy = defaultString(actor, "admin")
+	template.CreatedAt = s.now().UTC()
+	template.UpdatedAt = template.CreatedAt
+	template.Status = normalizeTemplateStatus(template.Status)
+	template.ValidationStatus = normalizeValidationStatus(template.ValidationStatus)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	template.ID = s.nextTemplateIDLocked(template.Name)
+	s.templates[template.ID] = template
+	if err := s.saveTemplateLocked(template); err != nil {
+		return domain.InstanceTemplate{}, err
+	}
+	return template, nil
+}
+
+func (s *Store) UpdateTemplate(id string, req domain.UpdateTemplateRequest, actor string) (domain.InstanceTemplate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	template, ok := s.templates[id]
+	if !ok {
+		return domain.InstanceTemplate{}, ErrNotFound
+	}
+	updated, err := mergeTemplateUpdate(template, req)
+	if err != nil {
+		return domain.InstanceTemplate{}, err
+	}
+	updated.ID = template.ID
+	updated.CreatedBy = template.CreatedBy
+	updated.CreatedAt = template.CreatedAt
+	updated.UpdatedAt = s.now().UTC()
+	updated.ValidationStatus = markTemplateStale(updated.ValidationStatus, template)
+	s.templates[id] = updated
+	if err := s.saveTemplateLocked(updated); err != nil {
+		return domain.InstanceTemplate{}, err
+	}
+	return updated, nil
+}
+
+func (s *Store) DeleteTemplate(id string, actor string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	template, ok := s.templates[id]
+	if !ok {
+		return ErrNotFound
+	}
+	template.Status = "Deleted"
+	template.UpdatedAt = s.now().UTC()
+	template.ValidationStatus = "UNVERIFIED"
+	s.templates[id] = template
+	if err := s.saveTemplateLocked(template); err != nil {
+		return err
+	}
+	_ = actor
+	return nil
+}
+
+func (s *Store) ValidateTemplate(id string) (domain.TemplateValidationResult, error) {
+	s.mu.RLock()
+	template, ok := s.templates[id]
+	s.mu.RUnlock()
+	if !ok {
+		return domain.TemplateValidationResult{}, ErrNotFound
+	}
+	missing := templateMissingFields(template)
+	result := domain.TemplateValidationResult{
+		TemplateID:      template.ID,
+		ProfileID:       template.ProfileID,
+		Region:          template.Region,
+		CompartmentID:   template.CompartmentID,
+		Status:          template.Status,
+		LastValidatedAt: s.now().UTC(),
+		CheckedFields: []string{
+			"profile", "region", "image", "shape", "compute", "bootVolume", "network",
+		},
+	}
+	if len(missing) == 0 {
+		result.Verified = true
+		result.Status = "VALID"
+		template.ValidationStatus = "VALID"
+		template.ValidationErrorCode = ""
+		template.ValidationMessage = "template fields are complete for form prefill"
+	} else {
+		result.Verified = false
+		result.Status = "INVALID"
+		result.ErrorCode = "TEMPLATE_FIELDS_INCOMPLETE"
+		result.ErrorMessage = "template is missing required prefill fields: " + strings.Join(missing, ", ")
+		result.IncompatibleKeys = missing
+		template.ValidationStatus = "INVALID"
+		template.ValidationErrorCode = result.ErrorCode
+		template.ValidationMessage = result.ErrorMessage
+	}
+	template.LastValidatedAt = result.LastValidatedAt
+	s.mu.Lock()
+	s.templates[id] = template
+	_ = s.saveTemplateLocked(template)
+	s.mu.Unlock()
+	return result, nil
 }
 
 func (s *Store) GetLaunchOptions() domain.LaunchOptions {
@@ -1444,6 +1559,10 @@ func (s *Store) CreateInstanceActionTask(instanceID string, req domain.InstanceA
 }
 
 func (s *Store) CreateOCIInstanceLaunchTask(req domain.CreateInstanceRequest, actor string) (domain.Job, error) {
+	req, template, err := s.applyTemplateToCreateRequest(req)
+	if err != nil {
+		return domain.Job{}, err
+	}
 	if strings.TrimSpace(req.Name) == "" {
 		return domain.Job{}, fmt.Errorf("%w: name is required", ErrValidation)
 	}
@@ -1520,6 +1639,10 @@ func (s *Store) CreateOCIInstanceLaunchTask(req domain.CreateInstanceRequest, ac
 		"notifyRootPassword":   req.NotifyRootPassword,
 		"cloudInitSensitive":   req.GenerateRootPassword,
 		"executionMode":        "oci",
+	}
+	if strings.TrimSpace(template.ID) != "" {
+		job.Input["templateVersion"] = template.Version
+		job.Input["templateOverrides"] = templateOverrides(template, req)
 	}
 	return s.saveJobLocked(job)
 }
@@ -1603,6 +1726,10 @@ func (s *Store) CreateOCIInstanceActionTask(instanceID string, req domain.Instan
 }
 
 func (s *Store) CreateInstanceTask(req domain.CreateInstanceRequest, actor string) (domain.CreateInstanceResponse, error) {
+	req, template, err := s.applyTemplateToCreateRequest(req)
+	if err != nil {
+		return domain.CreateInstanceResponse{}, err
+	}
 	if strings.TrimSpace(req.Name) == "" {
 		return domain.CreateInstanceResponse{}, fmt.Errorf("%w: name is required", ErrValidation)
 	}
@@ -1623,15 +1750,6 @@ func (s *Store) CreateInstanceTask(req domain.CreateInstanceRequest, actor strin
 	}
 	if !validBootVolumeVPUs(req.BootVolumeVPUsPerGB) {
 		return domain.CreateInstanceResponse{}, fmt.Errorf("%w: bootVolumeVpusPerGb must be between 10 and 120", ErrValidation)
-	}
-	if strings.TrimSpace(req.TemplateID) != "" {
-		template, ok := s.templates[req.TemplateID]
-		if !ok {
-			return domain.CreateInstanceResponse{}, fmt.Errorf("%w: template not found", ErrValidation)
-		}
-		if strings.TrimSpace(req.ImageID) == "" {
-			req.ImageID = template.ImageID
-		}
 	}
 	if req.MaxRetries < 0 {
 		return domain.CreateInstanceResponse{}, fmt.Errorf("%w: maxRetries cannot be negative", ErrValidation)
@@ -1714,6 +1832,10 @@ func (s *Store) CreateInstanceTask(req domain.CreateInstanceRequest, actor strin
 		"retryDelayMaxSeconds": req.RetryDelayMaxSec,
 		"requireApproval":      req.RequireApproval,
 		"snapshotBefore":       req.SnapshotBefore,
+	}
+	if strings.TrimSpace(template.ID) != "" {
+		job.Input["templateVersion"] = template.Version
+		job.Input["templateOverrides"] = templateOverrides(template, req)
 	}
 	if _, err := s.saveJobLocked(job); err != nil {
 		return domain.CreateInstanceResponse{}, err
@@ -1868,6 +1990,37 @@ func (s *Store) saveProfileLocked(profile domain.Profile, secret domain.ProfileS
 		return nil
 	}
 	return s.sink.SaveProfile(profile, secret)
+}
+
+func (s *Store) saveTemplateLocked(template domain.InstanceTemplate) error {
+	if strings.TrimSpace(template.ID) == "" {
+		return nil
+	}
+	template = normalizeTemplate(template, s.now().UTC())
+	s.templates[template.ID] = template
+	if s.sink == nil {
+		return nil
+	}
+	sink, ok := s.sink.(templateSink)
+	if !ok {
+		return nil
+	}
+	return sink.SaveTemplate(template)
+}
+
+func (s *Store) deleteTemplateLocked(templateID string) error {
+	if strings.TrimSpace(templateID) == "" {
+		return nil
+	}
+	delete(s.templates, templateID)
+	if s.sink == nil {
+		return nil
+	}
+	sink, ok := s.sink.(templateSink)
+	if !ok {
+		return nil
+	}
+	return sink.DeleteTemplate(templateID)
 }
 
 func instanceFromLaunchJob(job domain.Job, result map[string]any, syncedAt time.Time) domain.Instance {
@@ -2055,6 +2208,590 @@ func boolFromMap(in map[string]any, key string) bool {
 		return value
 	}
 	return false
+}
+
+func (s *Store) applyTemplateToCreateRequest(req domain.CreateInstanceRequest) (domain.CreateInstanceRequest, domain.InstanceTemplate, error) {
+	templateID := strings.TrimSpace(req.TemplateID)
+	if templateID == "" {
+		return req, domain.InstanceTemplate{}, nil
+	}
+	s.mu.RLock()
+	template, ok := s.templates[templateID]
+	s.mu.RUnlock()
+	if !ok || strings.EqualFold(template.Status, "DELETED") {
+		return domain.CreateInstanceRequest{}, domain.InstanceTemplate{}, fmt.Errorf("%w: template not found", ErrValidation)
+	}
+	if strings.EqualFold(template.Status, "DISABLED") || strings.EqualFold(template.Status, "ARCHIVED") {
+		return domain.CreateInstanceRequest{}, domain.InstanceTemplate{}, fmt.Errorf("%w: template is not active", ErrValidation)
+	}
+	if parsed, err := templateFromConfig(template); err == nil {
+		parsed.ID = template.ID
+		parsed.Name = template.Name
+		parsed.Description = template.Description
+		parsed.Version = template.Version
+		parsed.Status = template.Status
+		parsed.ValidationStatus = template.ValidationStatus
+		parsed.CreatedBy = template.CreatedBy
+		parsed.CreatedAt = template.CreatedAt
+		parsed.UpdatedAt = template.UpdatedAt
+		template = parsed
+	} else {
+		return domain.CreateInstanceRequest{}, domain.InstanceTemplate{}, fmt.Errorf("%w: template config parse failed: %v", ErrValidation, err)
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		req.Name = templateDefaultInstanceName(template)
+	}
+	if strings.TrimSpace(req.ProfileID) == "" {
+		req.ProfileID = template.ProfileID
+	}
+	if strings.TrimSpace(req.Region) == "" {
+		req.Region = template.Region
+	}
+	if strings.TrimSpace(req.Compartment) == "" {
+		req.Compartment = template.Compartment
+	}
+	if strings.TrimSpace(req.CompartmentID) == "" {
+		req.CompartmentID = template.CompartmentID
+	}
+	if strings.TrimSpace(req.AvailabilityAD) == "" {
+		req.AvailabilityAD = template.AvailabilityAD
+	}
+	if strings.TrimSpace(req.ImageID) == "" {
+		req.ImageID = template.ImageID
+	}
+	if strings.TrimSpace(req.Shape) == "" {
+		req.Shape = template.Shape
+	}
+	if req.OCPUs <= 0 {
+		req.OCPUs = template.OCPUs
+	}
+	if req.MemoryGB <= 0 {
+		req.MemoryGB = template.MemoryGB
+	}
+	if req.BootVolumeGB <= 0 {
+		req.BootVolumeGB = template.BootVolumeGB
+	}
+	if req.BootVolumeVPUsPerGB <= 0 {
+		req.BootVolumeVPUsPerGB = template.BootVolumeVPUsPerGB
+	}
+	if strings.TrimSpace(req.VCNID) == "" {
+		req.VCNID = template.VCNID
+	}
+	if strings.TrimSpace(req.SubnetID) == "" {
+		req.SubnetID = template.SubnetID
+	}
+	if !req.AssignPublicIP {
+		req.AssignPublicIP = template.AssignPublicIP
+	}
+	if !req.EnableIPv6 {
+		req.EnableIPv6 = template.EnableIPv6
+	}
+	if strings.TrimSpace(req.ReservedPublicIP) == "" {
+		req.ReservedPublicIP = template.ReservedPublicIP
+	}
+	if strings.TrimSpace(req.SSHKey) == "" {
+		req.SSHKey = template.SSHKey
+	}
+	if strings.TrimSpace(req.CloudInit) == "" {
+		req.CloudInit = template.CloudInit
+	}
+	if len(req.Tags) == 0 {
+		req.Tags = cleanTags(template.Tags)
+	} else {
+		merged := cleanTags(template.Tags)
+		for key, value := range cleanTags(req.Tags) {
+			merged[key] = value
+		}
+		req.Tags = merged
+	}
+	return req, template, nil
+}
+
+func templateOverrides(template domain.InstanceTemplate, req domain.CreateInstanceRequest) map[string]any {
+	overrides := map[string]any{}
+	addString := func(key, templateValue, reqValue string) {
+		if strings.TrimSpace(reqValue) != "" && strings.TrimSpace(reqValue) != strings.TrimSpace(templateValue) {
+			overrides[key] = reqValue
+		}
+	}
+	addInt := func(key string, templateValue, reqValue int) {
+		if reqValue > 0 && reqValue != templateValue {
+			overrides[key] = reqValue
+		}
+	}
+	addBool := func(key string, templateValue, reqValue bool) {
+		if reqValue != templateValue {
+			overrides[key] = reqValue
+		}
+	}
+	addString("profileId", template.ProfileID, req.ProfileID)
+	addString("region", template.Region, req.Region)
+	addString("compartmentId", template.CompartmentID, req.CompartmentID)
+	addString("availabilityAd", template.AvailabilityAD, req.AvailabilityAD)
+	addString("imageId", template.ImageID, req.ImageID)
+	addString("shape", template.Shape, req.Shape)
+	addInt("ocpus", template.OCPUs, req.OCPUs)
+	addInt("memoryGb", template.MemoryGB, req.MemoryGB)
+	addInt("bootVolumeGb", template.BootVolumeGB, req.BootVolumeGB)
+	addInt("bootVolumeVpusPerGb", template.BootVolumeVPUsPerGB, req.BootVolumeVPUsPerGB)
+	addString("vcnId", template.VCNID, req.VCNID)
+	addString("subnetId", template.SubnetID, req.SubnetID)
+	addBool("assignPublicIp", template.AssignPublicIP, req.AssignPublicIP)
+	addBool("enableIpv6", template.EnableIPv6, req.EnableIPv6)
+	addString("reservedPublicIp", template.ReservedPublicIP, req.ReservedPublicIP)
+	return overrides
+}
+
+func templateMissingFields(template domain.InstanceTemplate) []string {
+	var missing []string
+	requireString := func(key, value string) {
+		if strings.TrimSpace(value) == "" {
+			missing = append(missing, key)
+		}
+	}
+	requireInt := func(key string, value int) {
+		if value <= 0 {
+			missing = append(missing, key)
+		}
+	}
+	requireString("profileId", template.ProfileID)
+	requireString("region", template.Region)
+	requireString("shape", template.Shape)
+	requireInt("ocpus", template.OCPUs)
+	requireInt("memoryGb", template.MemoryGB)
+	requireInt("bootVolumeGb", template.BootVolumeGB)
+	if template.BootVolumeGB > 0 && template.BootVolumeGB < 50 {
+		missing = append(missing, "bootVolumeGb>=50")
+	}
+	if template.BootVolumeVPUsPerGB <= 0 || !validBootVolumeVPUs(template.BootVolumeVPUsPerGB) {
+		missing = append(missing, "bootVolumeVpusPerGb")
+	}
+	return missing
+}
+
+func templateFromCreateRequest(req domain.CreateTemplateRequest) (domain.InstanceTemplate, error) {
+	template := domain.InstanceTemplate{
+		Name:                strings.TrimSpace(req.Name),
+		Description:         strings.TrimSpace(req.Description),
+		Version:             strings.TrimSpace(req.Version),
+		ProfileID:           strings.TrimSpace(req.ProfileID),
+		Region:              strings.TrimSpace(req.Region),
+		Compartment:         strings.TrimSpace(req.Compartment),
+		CompartmentID:       strings.TrimSpace(req.CompartmentID),
+		AvailabilityAD:      strings.TrimSpace(req.AvailabilityAD),
+		ImageID:             strings.TrimSpace(req.ImageID),
+		ImageName:           strings.TrimSpace(req.ImageName),
+		Shape:               strings.TrimSpace(req.Shape),
+		OCPUs:               req.OCPUs,
+		MemoryGB:            req.MemoryGB,
+		BootVolumeGB:        req.BootVolumeGB,
+		BootVolumeVPUsPerGB: req.BootVolumeVPUsPerGB,
+		VCNID:               strings.TrimSpace(req.VCNID),
+		SubnetID:            strings.TrimSpace(req.SubnetID),
+		AssignPublicIP:      req.AssignPublicIP,
+		EnableIPv6:          req.EnableIPv6,
+		ReservedPublicIP:    strings.TrimSpace(req.ReservedPublicIP),
+		SSHKey:              strings.TrimSpace(req.SSHKey),
+		CloudInit:           strings.TrimSpace(req.CloudInit),
+		Tags:                cleanTags(req.Tags),
+		ConfigFormat:        strings.TrimSpace(req.ConfigFormat),
+		ConfigText:          strings.TrimSpace(req.ConfigText),
+		Status:              req.Status,
+	}
+	return normalizeTemplateForSave(template, time.Time{})
+}
+
+func mergeTemplateUpdate(current domain.InstanceTemplate, req domain.UpdateTemplateRequest) (domain.InstanceTemplate, error) {
+	updated := current
+	updated.Name = strings.TrimSpace(req.Name)
+	updated.Description = strings.TrimSpace(req.Description)
+	if strings.TrimSpace(req.Version) != "" {
+		updated.Version = strings.TrimSpace(req.Version)
+	}
+	updated.ProfileID = strings.TrimSpace(req.ProfileID)
+	updated.Region = strings.TrimSpace(req.Region)
+	updated.Compartment = strings.TrimSpace(req.Compartment)
+	updated.CompartmentID = strings.TrimSpace(req.CompartmentID)
+	updated.AvailabilityAD = strings.TrimSpace(req.AvailabilityAD)
+	updated.ImageID = strings.TrimSpace(req.ImageID)
+	updated.ImageName = strings.TrimSpace(req.ImageName)
+	updated.Shape = strings.TrimSpace(req.Shape)
+	if req.OCPUs > 0 {
+		updated.OCPUs = req.OCPUs
+	}
+	if req.MemoryGB > 0 {
+		updated.MemoryGB = req.MemoryGB
+	}
+	if req.BootVolumeGB > 0 {
+		updated.BootVolumeGB = req.BootVolumeGB
+	}
+	if req.BootVolumeVPUsPerGB > 0 {
+		updated.BootVolumeVPUsPerGB = req.BootVolumeVPUsPerGB
+	}
+	updated.VCNID = strings.TrimSpace(req.VCNID)
+	updated.SubnetID = strings.TrimSpace(req.SubnetID)
+	updated.AssignPublicIP = req.AssignPublicIP
+	updated.EnableIPv6 = req.EnableIPv6
+	updated.ReservedPublicIP = strings.TrimSpace(req.ReservedPublicIP)
+	updated.SSHKey = strings.TrimSpace(req.SSHKey)
+	updated.CloudInit = strings.TrimSpace(req.CloudInit)
+	if req.Tags != nil {
+		updated.Tags = cleanTags(req.Tags)
+	}
+	updated.ConfigFormat = strings.TrimSpace(req.ConfigFormat)
+	updated.ConfigText = strings.TrimSpace(req.ConfigText)
+	if strings.TrimSpace(req.Status) != "" {
+		updated.Status = req.Status
+	}
+	return normalizeTemplateForSave(updated, current.CreatedAt)
+}
+
+func normalizeTemplateForSave(template domain.InstanceTemplate, createdAt time.Time) (domain.InstanceTemplate, error) {
+	if strings.TrimSpace(template.Name) == "" {
+		return domain.InstanceTemplate{}, fmt.Errorf("%w: template name is required", ErrValidation)
+	}
+	if strings.TrimSpace(template.Version) == "" {
+		template.Version = "v1"
+	}
+	if template.BootVolumeGB <= 0 {
+		template.BootVolumeGB = 50
+	}
+	if template.BootVolumeGB < 50 {
+		return domain.InstanceTemplate{}, fmt.Errorf("%w: bootVolumeGb cannot be less than 50", ErrValidation)
+	}
+	if template.BootVolumeVPUsPerGB == 0 {
+		template.BootVolumeVPUsPerGB = 10
+	}
+	if !validBootVolumeVPUs(template.BootVolumeVPUsPerGB) {
+		return domain.InstanceTemplate{}, fmt.Errorf("%w: bootVolumeVpusPerGb must be between 10 and 120", ErrValidation)
+	}
+	if strings.TrimSpace(template.ConfigFormat) == "" {
+		template.ConfigFormat = "json"
+	}
+	if strings.TrimSpace(template.ConfigText) != "" {
+		parsed, err := templateFromConfig(template)
+		if err != nil {
+			return domain.InstanceTemplate{}, err
+		}
+		template = mergeTemplateConfigFields(template, parsed)
+	} else {
+		configText, err := templateConfigJSON(template)
+		if err != nil {
+			return domain.InstanceTemplate{}, err
+		}
+		template.ConfigFormat = "json"
+		template.ConfigText = configText
+	}
+	template = normalizeTemplate(template, createdAt)
+	return template, nil
+}
+
+func normalizeTemplate(template domain.InstanceTemplate, now time.Time) domain.InstanceTemplate {
+	template.ID = strings.TrimSpace(template.ID)
+	template.Name = strings.TrimSpace(template.Name)
+	template.Description = strings.TrimSpace(template.Description)
+	template.Version = defaultString(strings.TrimSpace(template.Version), "v1")
+	template.ProfileID = strings.TrimSpace(template.ProfileID)
+	template.Region = strings.TrimSpace(template.Region)
+	template.Compartment = strings.TrimSpace(template.Compartment)
+	template.CompartmentID = strings.TrimSpace(template.CompartmentID)
+	template.AvailabilityAD = strings.TrimSpace(template.AvailabilityAD)
+	template.ImageID = strings.TrimSpace(template.ImageID)
+	template.ImageName = strings.TrimSpace(template.ImageName)
+	template.Shape = strings.TrimSpace(template.Shape)
+	template.VCNID = strings.TrimSpace(template.VCNID)
+	template.SubnetID = strings.TrimSpace(template.SubnetID)
+	template.ReservedPublicIP = strings.TrimSpace(template.ReservedPublicIP)
+	template.SSHKey = strings.TrimSpace(template.SSHKey)
+	template.CloudInit = strings.TrimSpace(template.CloudInit)
+	template.ConfigFormat = normalizeTemplateConfigFormat(template.ConfigFormat)
+	template.ConfigText = strings.TrimSpace(template.ConfigText)
+	template.CloudInitSet = template.CloudInitSet || template.CloudInit != ""
+	if template.Tags == nil {
+		template.Tags = map[string]string{}
+	} else {
+		template.Tags = cleanTags(template.Tags)
+	}
+	template.Status = normalizeTemplateStatus(template.Status)
+	template.ValidationStatus = normalizeValidationStatus(template.ValidationStatus)
+	if template.CreatedAt.IsZero() && !now.IsZero() {
+		template.CreatedAt = now.UTC()
+	}
+	if template.UpdatedAt.IsZero() {
+		if !now.IsZero() {
+			template.UpdatedAt = now.UTC()
+		} else {
+			template.UpdatedAt = template.CreatedAt
+		}
+	}
+	return template
+}
+
+func normalizeTemplateStatus(status string) string {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "DRAFT":
+		return "DRAFT"
+	case "DISABLED":
+		return "DISABLED"
+	case "ARCHIVED":
+		return "ARCHIVED"
+	case "DELETED":
+		return "DELETED"
+	default:
+		return "ACTIVE"
+	}
+}
+
+func normalizeValidationStatus(status string) string {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "VALIDATING", "VALID", "INVALID", "STALE":
+		return strings.ToUpper(strings.TrimSpace(status))
+	default:
+		return "UNVERIFIED"
+	}
+}
+
+func normalizeTemplateConfigFormat(format string) string {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "yaml", "yml":
+		return "yaml"
+	default:
+		return "json"
+	}
+}
+
+func templateConfigJSON(template domain.InstanceTemplate) (string, error) {
+	payload := map[string]any{
+		"context": map[string]any{
+			"profileId":      template.ProfileID,
+			"region":         template.Region,
+			"compartment":    template.Compartment,
+			"compartmentId":  template.CompartmentID,
+			"availabilityAd": template.AvailabilityAD,
+		},
+		"imageAndShape": map[string]any{
+			"imageId":             template.ImageID,
+			"imageName":           template.ImageName,
+			"shape":               template.Shape,
+			"ocpus":               template.OCPUs,
+			"memoryGb":            template.MemoryGB,
+			"bootVolumeGb":        template.BootVolumeGB,
+			"bootVolumeVpusPerGb": template.BootVolumeVPUsPerGB,
+		},
+		"networkAndAccess": map[string]any{
+			"vcnId":            template.VCNID,
+			"subnetId":         template.SubnetID,
+			"assignPublicIp":   template.AssignPublicIP,
+			"enableIpv6":       template.EnableIPv6,
+			"reservedPublicIp": template.ReservedPublicIP,
+			"sshKey":           template.SSHKey,
+			"cloudInit":        template.CloudInit,
+		},
+		"tags": cleanTags(template.Tags),
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func templateFromConfig(template domain.InstanceTemplate) (domain.InstanceTemplate, error) {
+	raw, err := templateConfigMap(template)
+	if err != nil {
+		return domain.InstanceTemplate{}, err
+	}
+	if len(raw) == 0 {
+		return template, nil
+	}
+	parsed := template
+	applyTemplateConfigMap(&parsed, raw)
+	return normalizeTemplate(parsed, template.CreatedAt), nil
+}
+
+func templateConfigMap(template domain.InstanceTemplate) (map[string]any, error) {
+	configText := strings.TrimSpace(template.ConfigText)
+	if configText == "" {
+		return map[string]any{}, nil
+	}
+	var raw map[string]any
+	var err error
+	switch normalizeTemplateConfigFormat(template.ConfigFormat) {
+	case "yaml":
+		raw, err = parseSimpleYAML(configText)
+	default:
+		err = json.Unmarshal([]byte(configText), &raw)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+func templateDefaultInstanceName(template domain.InstanceTemplate) string {
+	raw, err := templateConfigMap(template)
+	if err != nil {
+		return ""
+	}
+	instance := mapFromAny(raw["instance"])
+	return defaultString(stringFromMap(instance, "name"), stringFromMap(raw, "instanceName"))
+}
+
+func mergeTemplateConfigFields(base, parsed domain.InstanceTemplate) domain.InstanceTemplate {
+	base.ProfileID = parsed.ProfileID
+	base.Region = parsed.Region
+	base.Compartment = parsed.Compartment
+	base.CompartmentID = parsed.CompartmentID
+	base.AvailabilityAD = parsed.AvailabilityAD
+	base.ImageID = parsed.ImageID
+	base.ImageName = parsed.ImageName
+	base.Shape = parsed.Shape
+	base.OCPUs = parsed.OCPUs
+	base.MemoryGB = parsed.MemoryGB
+	base.BootVolumeGB = parsed.BootVolumeGB
+	base.BootVolumeVPUsPerGB = parsed.BootVolumeVPUsPerGB
+	base.VCNID = parsed.VCNID
+	base.SubnetID = parsed.SubnetID
+	base.AssignPublicIP = parsed.AssignPublicIP
+	base.EnableIPv6 = parsed.EnableIPv6
+	base.ReservedPublicIP = parsed.ReservedPublicIP
+	base.SSHKey = parsed.SSHKey
+	base.CloudInit = parsed.CloudInit
+	base.Tags = cleanTags(parsed.Tags)
+	return base
+}
+
+func applyTemplateConfigMap(template *domain.InstanceTemplate, raw map[string]any) {
+	context := mapFromAny(raw["context"])
+	compute := mapFromAny(raw["imageAndShape"])
+	if len(compute) == 0 {
+		compute = mapFromAny(raw["compute"])
+	}
+	network := mapFromAny(raw["networkAndAccess"])
+	if len(network) == 0 {
+		network = mapFromAny(raw["network"])
+	}
+	tags := mapFromAny(raw["tags"])
+
+	template.ProfileID = defaultString(stringFromMap(context, "profileId"), stringFromMap(raw, "profileId"))
+	template.Region = defaultString(stringFromMap(context, "region"), stringFromMap(raw, "region"))
+	template.Compartment = defaultString(stringFromMap(context, "compartment"), stringFromMap(raw, "compartment"))
+	template.CompartmentID = defaultString(stringFromMap(context, "compartmentId"), stringFromMap(raw, "compartmentId"))
+	template.AvailabilityAD = defaultString(stringFromMap(context, "availabilityAd"), stringFromMap(raw, "availabilityAd"))
+	template.ImageID = defaultString(stringFromMap(compute, "imageId"), stringFromMap(raw, "imageId"))
+	template.ImageName = defaultString(stringFromMap(compute, "imageName"), stringFromMap(raw, "imageName"))
+	template.Shape = defaultString(stringFromMap(compute, "shape"), stringFromMap(raw, "shape"))
+	template.OCPUs = defaultInt(intFromMap(compute, "ocpus"), intFromMap(raw, "ocpus"))
+	template.MemoryGB = defaultInt(intFromMap(compute, "memoryGb"), intFromMap(raw, "memoryGb"))
+	template.BootVolumeGB = defaultInt(intFromMap(compute, "bootVolumeGb"), intFromMap(raw, "bootVolumeGb"))
+	template.BootVolumeVPUsPerGB = defaultInt(intFromMap(compute, "bootVolumeVpusPerGb"), intFromMap(raw, "bootVolumeVpusPerGb"))
+	template.VCNID = defaultString(stringFromMap(network, "vcnId"), stringFromMap(raw, "vcnId"))
+	template.SubnetID = defaultString(stringFromMap(network, "subnetId"), stringFromMap(raw, "subnetId"))
+	if value, ok := boolValueFromMaps(network, raw, "assignPublicIp"); ok {
+		template.AssignPublicIP = value
+	}
+	if value, ok := boolValueFromMaps(network, raw, "enableIpv6"); ok {
+		template.EnableIPv6 = value
+	}
+	template.ReservedPublicIP = defaultString(stringFromMap(network, "reservedPublicIp"), stringFromMap(raw, "reservedPublicIp"))
+	template.SSHKey = defaultString(stringFromMap(network, "sshKey"), stringFromMap(raw, "sshKey"))
+	template.CloudInit = defaultString(stringFromMap(network, "cloudInit"), stringFromMap(raw, "cloudInit"))
+	if len(tags) > 0 {
+		template.Tags = stringMapFromAny(tags)
+	}
+}
+
+func mapFromAny(value any) map[string]any {
+	if typed, ok := value.(map[string]any); ok {
+		return typed
+	}
+	return map[string]any{}
+}
+
+func stringMapFromAny(in map[string]any) map[string]string {
+	out := map[string]string{}
+	for key, value := range in {
+		if str, ok := value.(string); ok {
+			out[key] = str
+		}
+	}
+	return out
+}
+
+func boolValueFromMaps(primary, fallback map[string]any, key string) (bool, bool) {
+	if value, ok := primary[key].(bool); ok {
+		return value, true
+	}
+	if value, ok := fallback[key].(bool); ok {
+		return value, true
+	}
+	return false, false
+}
+
+func parseSimpleYAML(input string) (map[string]any, error) {
+	root := map[string]any{}
+	var current map[string]any
+	for _, line := range strings.Split(input, "\n") {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		parts := strings.SplitN(strings.TrimSpace(line), ":", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid yaml line: %s", strings.TrimSpace(line))
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		if indent == 0 && value == "" {
+			child := map[string]any{}
+			root[key] = child
+			current = child
+			continue
+		}
+		target := root
+		if indent > 0 && current != nil {
+			target = current
+		}
+		target[key] = parseScalar(value)
+	}
+	return root, nil
+}
+
+func parseScalar(value string) any {
+	value = strings.Trim(strings.TrimSpace(value), `"'`)
+	switch strings.ToLower(value) {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+	var number int
+	if _, err := fmt.Sscanf(value, "%d", &number); err == nil && fmt.Sprintf("%d", number) == value {
+		return number
+	}
+	return value
+}
+
+func markTemplateStale(currentStatus string, previous domain.InstanceTemplate) string {
+	status := normalizeValidationStatus(currentStatus)
+	if status == "VALID" {
+		return "STALE"
+	}
+	_ = previous
+	return status
+}
+
+func cleanTags(tags map[string]string) map[string]string {
+	out := map[string]string{}
+	for key, value := range tags {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 func validateRetryPolicy(req domain.CreateInstanceRequest) error {
@@ -2267,6 +3004,21 @@ func (s *Store) nextProfileIDLocked(name string) string {
 	}
 }
 
+func (s *Store) nextTemplateIDLocked(name string) string {
+	slug := slugifyIDPart(name)
+	if slug == "" {
+		slug = "template"
+	}
+	base := "tpl-" + slug
+	id := base
+	for i := 2; ; i++ {
+		if _, exists := s.templates[id]; !exists {
+			return id
+		}
+		id = fmt.Sprintf("%s-%d", base, i)
+	}
+}
+
 func (s *Store) profileByIDOrNameLocked(id string) (domain.Profile, bool) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -2284,8 +3036,7 @@ func (s *Store) profileByIDOrNameLocked(id string) (domain.Profile, bool) {
 }
 
 func (s *Store) nextInstanceIDLocked(name string) string {
-	slug := strings.ToLower(strings.TrimSpace(name))
-	slug = strings.ReplaceAll(slug, " ", "-")
+	slug := slugifyIDPart(name)
 	if slug == "" {
 		slug = "instance"
 	}
@@ -2304,6 +3055,24 @@ func (s *Store) nextNotificationIDLocked() string {
 	id := fmt.Sprintf("notice-%d", s.nextNotice)
 	s.nextNotice++
 	return id
+}
+
+func slugifyIDPart(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range value {
+		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		switch {
+		case isAlphaNum:
+			builder.WriteRune(r)
+			lastDash = false
+		case !lastDash:
+			builder.WriteRune('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(builder.String(), "-")
 }
 
 func (s *Store) nextAuditIDLocked() int64 {

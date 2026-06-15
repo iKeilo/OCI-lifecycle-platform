@@ -50,13 +50,13 @@
 | `src/pages/ProfilesPage.tsx` | OCI Profile 添加、测试连接、启用/禁用、删除。 |
 | `src/pages/InstancesPage.tsx` | 实例列表、生命周期操作、IP/IPv6 操作入口。 |
 | `src/pages/CreateInstancePage.tsx` | 创建实例向导、Launch Options、重试模式、标签等。 |
+| `src/pages/TemplatesPage.tsx` | 模板管理页面。模板只保存创建实例表单预输入，不调用 OCI API。 |
 | `src/pages/JobsPage.tsx` | 任务中心与任务状态。 |
 | `src/pages/NotificationsPage.tsx` | 站内通知列表。 |
 | `src/pages/EmailPage.tsx` | 通知通道配置，包含 SMTP 和 Webhook。 |
 | `src/pages/AuditPage.tsx` | 审计日志查询、筛选、详情。 |
 | `src/pages/BudgetManagementPage.tsx` | 预算管理入口，展示预算策略、预算熔断、自动降配/删机护栏；当前执行器待后端接入。 |
 | `src/pages/AutomationsPage.tsx` | 自动化策略入口，目前仍需补齐 scheduler 与真实执行链路。 |
-| `src/pages/ResourcePoolsPage.tsx` | Instance Pool/Autoscaling 入口，目前仍需补齐真实 executor。 |
 | `src/pages/SettingsPage.tsx` | 平台设置入口。 |
 | `src/pages/UsersPage.tsx` | 用户/RBAC 入口，目前仍需补齐真实 RBAC 与审批。 |
 | `src/services/api.ts` | 前端 API client 与类型定义。 |
@@ -76,6 +76,7 @@
 | `docs/linux-install.md` | 原生 Linux/systemd 部署说明。 |
 | `docs/github-release-packages.md` | GitHub Releases 与 GHCR Packages 发布说明。 |
 | `docs/budget-management-implementation.md` | 预算管理、预算熔断、超预算降配/删机的实施方案。 |
+| `docs/template-management-implementation.md` | 模板管理回归实施文档，定义模板为纯预输入功能。 |
 
 ## 部署入口
 
@@ -138,10 +139,10 @@ npm run build
 | 项目 | 状态 |
 | --- | --- |
 | PostgreSQL 重启恢复 | 已有持久化基础，仍需做完整重启恢复专项验证。 |
-| Webhook 真实投递 | API 与配置已落地，当前只验证了禁用时返回 502；真实上游投递待验证。 |
-| Instance Pool / Autoscaling | UI 入口存在，真实 OCI executor 待落地。 |
+| Webhook 真实投递 | API 与配置已落地，真实外部 URL 投递待专项验证。 |
+| Instance Pool / Autoscaling | 当前 UI 入口已移除，后续需要按 OCI Instance Configuration / Instance Pool / Autoscaling 重新设计并落地。 |
 | RBAC / 审批 | 页面入口和部分模型存在，真实权限与审批流待落地。 |
 | 预算管理 / 预算熔断 | 已新增前端入口和实施文档；BudgetPolicy CRUD、OCI Budgets 同步、Cost Usage 采集、自动降配/删机执行器待落地。 |
-| Template CRUD | 页面入口存在，真实模板版本化与创建实例绑定待补齐。 |
+| Template CRUD | 已恢复模板管理页面、CRUD、本地字段检查、创建实例页预输入和 `templateId` 任务记录；模板版本化与使用历史待补齐。 |
 | 自动化 scheduler | 策略页面存在，真实周期触发、冷却和执行链路待补齐。 |
 | 审计导出 | 查询已落地，导出能力待补齐。 |

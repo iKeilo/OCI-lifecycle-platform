@@ -17,6 +17,8 @@ import { NotificationsPage } from "../pages/NotificationsPage";
 import { PlaceholderPage } from "../pages/PlaceholderPage";
 import { ProfilesPage } from "../pages/ProfilesPage";
 import { SettingsPage } from "../pages/SettingsPage";
+import { TemplateEditorPage } from "../pages/TemplateEditorPage";
+import { TemplatesPage } from "../pages/TemplatesPage";
 import { UsersPage } from "../pages/UsersPage";
 import { getAuthStatus, logout, type AuthStatus } from "../services/api";
 
@@ -80,6 +82,9 @@ export function App() {
         <Route path="/profiles" element={<ProfilesPage />} />
         <Route path="/instances" element={<InstancesPage />} />
         <Route path="/create" element={<CreateInstancePage />} />
+        <Route path="/templates" element={<TemplatesPage />} />
+        <Route path="/templates/new" element={<TemplateEditorPage />} />
+        <Route path="/templates/:templateId/edit" element={<TemplateEditorPage />} />
         <Route path="/network" element={<NetworkPage />} />
         <Route path="/automations" element={<AutomationsPage />} />
         <Route path="/jobs" element={<JobsPage />} />

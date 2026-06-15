@@ -3,6 +3,7 @@ import {
   Bell,
   ChartNoAxesCombined,
   ClipboardCheck,
+  ClipboardList,
   Cloud,
   DollarSign,
   FileKey,
@@ -36,6 +37,7 @@ export const navGroups: NavGroup[] = [
       { label: "概览", path: "/", icon: LayoutDashboard },
       { label: "实例管理", path: "/instances", icon: Server },
       { label: "创建实例", path: "/create", icon: PlusCircle },
+      { label: "模板管理", path: "/templates", icon: ClipboardList },
       { label: "网络管理", path: "/network", icon: Gauge },
       { label: "自动化规则", path: "/automations", icon: Activity }
     ]

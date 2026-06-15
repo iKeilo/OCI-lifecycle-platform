@@ -138,10 +138,13 @@ type AuditLogFilter struct {
 type InstanceTemplate struct {
 	ID                  string            `json:"id"`
 	Name                string            `json:"name"`
+	Description         string            `json:"description"`
 	Version             string            `json:"version"`
 	ProfileID           string            `json:"profileId"`
 	Region              string            `json:"region"`
 	Compartment         string            `json:"compartment"`
+	CompartmentID       string            `json:"compartmentId"`
+	AvailabilityAD      string            `json:"availabilityAd"`
 	ImageID             string            `json:"imageId"`
 	ImageName           string            `json:"imageName"`
 	Shape               string            `json:"shape"`
@@ -152,10 +155,106 @@ type InstanceTemplate struct {
 	VCNID               string            `json:"vcnId"`
 	SubnetID            string            `json:"subnetId"`
 	AssignPublicIP      bool              `json:"assignPublicIp"`
+	EnableIPv6          bool              `json:"enableIpv6"`
+	ReservedPublicIP    string            `json:"reservedPublicIp"`
+	SSHKey              string            `json:"sshKey"`
+	CloudInit           string            `json:"cloudInit,omitempty"`
+	CloudInitSet        bool              `json:"cloudInitSet"`
 	Tags                map[string]string `json:"tags"`
+	ConfigFormat        string            `json:"configFormat"`
+	ConfigText          string            `json:"configText,omitempty"`
 	Status              string            `json:"status"`
+	ValidationStatus    string            `json:"validationStatus"`
+	ValidationErrorCode string            `json:"validationErrorCode,omitempty"`
+	ValidationMessage   string            `json:"validationMessage,omitempty"`
+	LastValidatedAt     time.Time         `json:"lastValidatedAt,omitempty"`
 	CreatedBy           string            `json:"createdBy"`
 	CreatedAt           time.Time         `json:"createdAt"`
+	UpdatedAt           time.Time         `json:"updatedAt"`
+}
+
+type TemplateFilter struct {
+	ProfileID        string `json:"profileId"`
+	Region           string `json:"region"`
+	CompartmentID    string `json:"compartmentId"`
+	Status           string `json:"status"`
+	ValidationStatus string `json:"validationStatus"`
+	Query            string `json:"q"`
+	Limit            int    `json:"limit"`
+	IncludeDeleted   bool   `json:"includeDeleted"`
+}
+
+type CreateTemplateRequest struct {
+	Name                string            `json:"name"`
+	Description         string            `json:"description"`
+	Version             string            `json:"version"`
+	ProfileID           string            `json:"profileId"`
+	Region              string            `json:"region"`
+	Compartment         string            `json:"compartment"`
+	CompartmentID       string            `json:"compartmentId"`
+	AvailabilityAD      string            `json:"availabilityAd"`
+	ImageID             string            `json:"imageId"`
+	ImageName           string            `json:"imageName"`
+	Shape               string            `json:"shape"`
+	OCPUs               int               `json:"ocpus"`
+	MemoryGB            int               `json:"memoryGb"`
+	BootVolumeGB        int               `json:"bootVolumeGb"`
+	BootVolumeVPUsPerGB int               `json:"bootVolumeVpusPerGb"`
+	VCNID               string            `json:"vcnId"`
+	SubnetID            string            `json:"subnetId"`
+	AssignPublicIP      bool              `json:"assignPublicIp"`
+	EnableIPv6          bool              `json:"enableIpv6"`
+	ReservedPublicIP    string            `json:"reservedPublicIp"`
+	SSHKey              string            `json:"sshKey"`
+	CloudInit           string            `json:"cloudInit"`
+	Tags                map[string]string `json:"tags"`
+	ConfigFormat        string            `json:"configFormat"`
+	ConfigText          string            `json:"configText"`
+	Status              string            `json:"status"`
+}
+
+type UpdateTemplateRequest struct {
+	Name                string            `json:"name"`
+	Description         string            `json:"description"`
+	Version             string            `json:"version"`
+	ProfileID           string            `json:"profileId"`
+	Region              string            `json:"region"`
+	Compartment         string            `json:"compartment"`
+	CompartmentID       string            `json:"compartmentId"`
+	AvailabilityAD      string            `json:"availabilityAd"`
+	ImageID             string            `json:"imageId"`
+	ImageName           string            `json:"imageName"`
+	Shape               string            `json:"shape"`
+	OCPUs               int               `json:"ocpus"`
+	MemoryGB            int               `json:"memoryGb"`
+	BootVolumeGB        int               `json:"bootVolumeGb"`
+	BootVolumeVPUsPerGB int               `json:"bootVolumeVpusPerGb"`
+	VCNID               string            `json:"vcnId"`
+	SubnetID            string            `json:"subnetId"`
+	AssignPublicIP      bool              `json:"assignPublicIp"`
+	EnableIPv6          bool              `json:"enableIpv6"`
+	ReservedPublicIP    string            `json:"reservedPublicIp"`
+	SSHKey              string            `json:"sshKey"`
+	CloudInit           string            `json:"cloudInit"`
+	Tags                map[string]string `json:"tags"`
+	ConfigFormat        string            `json:"configFormat"`
+	ConfigText          string            `json:"configText"`
+	Status              string            `json:"status"`
+}
+
+type TemplateValidationResult struct {
+	Verified         bool      `json:"verified"`
+	TemplateID       string    `json:"templateId"`
+	ProfileID        string    `json:"profileId"`
+	Region           string    `json:"region"`
+	CompartmentID    string    `json:"compartmentId"`
+	Status           string    `json:"status"`
+	ErrorCode        string    `json:"errorCode,omitempty"`
+	ErrorMessage     string    `json:"errorMessage,omitempty"`
+	RequestIDs       []string  `json:"requestIds,omitempty"`
+	LastValidatedAt  time.Time `json:"lastValidatedAt"`
+	CheckedFields    []string  `json:"checkedFields"`
+	IncompatibleKeys []string  `json:"incompatibleKeys,omitempty"`
 }
 
 type LaunchOption struct {

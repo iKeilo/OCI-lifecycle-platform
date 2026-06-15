@@ -210,6 +210,156 @@ func TestCreateInstanceTaskPersistsInstance(t *testing.T) {
 	}
 }
 
+func TestCreateInstanceTaskMergesTemplatePrefillAndRecordsSource(t *testing.T) {
+	s := NewSeeded()
+	template, err := s.CreateTemplate(domain.CreateTemplateRequest{
+		Name:                "template-prefill",
+		ProfileID:           "profile-default",
+		Region:              "ap-chuncheon-1",
+		Compartment:         "development",
+		CompartmentID:       "ocid1.compartment.oc1..template",
+		AvailabilityAD:      "AD-1",
+		ImageID:             "ocid1.image.oc1..template",
+		Shape:               "VM.Standard.E3.Flex",
+		OCPUs:               1,
+		MemoryGB:            1,
+		BootVolumeGB:        50,
+		BootVolumeVPUsPerGB: 20,
+		VCNID:               "ocid1.vcn.oc1..template",
+		SubnetID:            "ocid1.subnet.oc1..template",
+		AssignPublicIP:      true,
+		EnableIPv6:          true,
+		SSHKey:              "ssh-rsa template",
+		Tags: map[string]string{
+			"owner": "template",
+		},
+	}, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if template.ConfigFormat != "json" || template.ConfigText == "" {
+		t.Fatalf("expected generated json template config, got format=%q text=%q", template.ConfigFormat, template.ConfigText)
+	}
+
+	result, err := s.CreateInstanceTask(domain.CreateInstanceRequest{
+		TemplateID: template.ID,
+		Name:       "from-template",
+		MemoryGB:   2,
+		Tags: map[string]string{
+			"owner": "request",
+		},
+	}, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Instance.Shape != template.Shape || result.Instance.OCPUs != template.OCPUs || result.Instance.MemoryGB != 2 {
+		t.Fatalf("expected template fields with request override, got instance=%#v template=%#v", result.Instance, template)
+	}
+	if result.Job.Input["templateId"] != template.ID || result.Job.Input["templateVersion"] != template.Version {
+		t.Fatalf("expected template source in job input, got %#v", result.Job.Input)
+	}
+	if result.Job.Input["region"] != template.Region || result.Job.Input["imageId"] != template.ImageID || result.Job.Input["subnetId"] != template.SubnetID {
+		t.Fatalf("expected template prefill in job input, got %#v", result.Job.Input)
+	}
+	overrides, ok := result.Job.Input["templateOverrides"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected templateOverrides map, got %#v", result.Job.Input["templateOverrides"])
+	}
+	if overrides["memoryGb"] != 2 {
+		t.Fatalf("expected request overrides to be recorded, got %#v", overrides)
+	}
+}
+
+func TestCreateInstanceTaskParsesYAMLTemplateConfig(t *testing.T) {
+	s := NewSeeded()
+	template, err := s.CreateTemplate(domain.CreateTemplateRequest{
+		Name:         "yaml-prefill",
+		ConfigFormat: "yaml",
+		ConfigText: `
+context:
+  profileId: profile-default
+  region: ap-chuncheon-1
+  compartmentId: ocid1.compartment.oc1..yaml
+imageAndShape:
+  imageId: ocid1.image.oc1..yaml
+  shape: VM.Standard.E3.Flex
+  ocpus: 1
+  memoryGb: 2
+  bootVolumeGb: 50
+  bootVolumeVpusPerGb: 20
+networkAndAccess:
+  vcnId: ocid1.vcn.oc1..yaml
+  subnetId: ocid1.subnet.oc1..yaml
+  assignPublicIp: true
+  enableIpv6: true
+tags:
+  owner: yaml
+`,
+	}, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := s.CreateInstanceTask(domain.CreateInstanceRequest{
+		TemplateID: template.ID,
+		Name:       "from-yaml-template",
+	}, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Instance.Shape != "VM.Standard.E3.Flex" || result.Instance.MemoryGB != 2 || result.Instance.PrimaryIP == "-" {
+		t.Fatalf("expected yaml template to drive instance prefill, got %#v", result.Instance)
+	}
+	if result.Job.Input["enableIpv6"] != true || result.Job.Input["subnetId"] != "ocid1.subnet.oc1..yaml" {
+		t.Fatalf("expected yaml network config in job input, got %#v", result.Job.Input)
+	}
+}
+
+func TestCreateInstanceTaskUsesTemplateDefaultInstanceName(t *testing.T) {
+	s := NewSeeded()
+	template, err := s.CreateTemplate(domain.CreateTemplateRequest{
+		Name:         "named-template",
+		ConfigFormat: "json",
+		ConfigText: `{
+  "instance": {
+    "name": "prefilled-instance-name"
+  },
+  "context": {
+    "profileId": "profile-default",
+    "region": "ap-chuncheon-1",
+    "compartmentId": "ocid1.compartment.oc1..named"
+  },
+  "imageAndShape": {
+    "imageId": "ocid1.image.oc1..named",
+    "shape": "VM.Standard.E3.Flex",
+    "ocpus": 1,
+    "memoryGb": 2,
+    "bootVolumeGb": 50,
+    "bootVolumeVpusPerGb": 10
+  },
+  "networkAndAccess": {
+    "vcnId": "ocid1.vcn.oc1..named",
+    "subnetId": "ocid1.subnet.oc1..named",
+    "assignPublicIp": true
+  }
+}`,
+	}, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := s.CreateInstanceTask(domain.CreateInstanceRequest{
+		TemplateID: template.ID,
+	}, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Instance.Name != "prefilled-instance-name" || result.Job.Input["name"] != "prefilled-instance-name" {
+		t.Fatalf("expected default instance name from template config, got instance=%#v job=%#v", result.Instance, result.Job.Input)
+	}
+}
+
 func TestCreateOCIInstanceLaunchTaskPersistsRetryPolicy(t *testing.T) {
 	s := NewSeeded()
 	job, err := s.CreateOCIInstanceLaunchTask(domain.CreateInstanceRequest{

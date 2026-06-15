@@ -69,23 +69,82 @@ export type Instance = {
 export type InstanceTemplate = {
   id: string;
   name: string;
+  description: string;
   version: string;
   profileId: string;
   region: string;
   compartment: string;
+  compartmentId: string;
+  availabilityAd: string;
   imageId: string;
   imageName: string;
   shape: string;
   ocpus: number;
   memoryGb: number;
   bootVolumeGb: number;
+  bootVolumeVpusPerGb: number;
   vcnId: string;
   subnetId: string;
   assignPublicIp: boolean;
+  enableIpv6: boolean;
+  reservedPublicIp: string;
+  sshKey: string;
+  cloudInit?: string;
+  cloudInitSet: boolean;
   tags: Record<string, string>;
+  configFormat: string;
+  configText?: string;
   status: string;
+  validationStatus: string;
+  validationErrorCode?: string;
+  validationMessage?: string;
+  lastValidatedAt?: string;
   createdBy: string;
   createdAt: string;
+  updatedAt: string;
+};
+
+export type TemplatePayload = {
+  name: string;
+  description: string;
+  version: string;
+  profileId: string;
+  region: string;
+  compartment: string;
+  compartmentId: string;
+  availabilityAd: string;
+  imageId: string;
+  imageName: string;
+  shape: string;
+  ocpus: number;
+  memoryGb: number;
+  bootVolumeGb: number;
+  bootVolumeVpusPerGb: number;
+  vcnId: string;
+  subnetId: string;
+  assignPublicIp: boolean;
+  enableIpv6: boolean;
+  reservedPublicIp: string;
+  sshKey: string;
+  cloudInit: string;
+  tags: Record<string, string>;
+  configFormat: string;
+  configText: string;
+  status: string;
+};
+
+export type TemplateValidationResult = {
+  verified: boolean;
+  templateId: string;
+  profileId: string;
+  region: string;
+  compartmentId: string;
+  status: string;
+  errorCode?: string;
+  errorMessage?: string;
+  lastValidatedAt: string;
+  checkedFields: string[];
+  incompatibleKeys?: string[];
 };
 
 export type LaunchOption = {
@@ -257,6 +316,7 @@ export type AutomationTaskPayload = {
 
 export type CreateInstancePayload = {
   name: string;
+  templateId?: string;
   profileId: string;
   region: string;
   compartment: string;
@@ -530,6 +590,53 @@ export async function createInstanceTask(payload: CreateInstancePayload): Promis
   return request<CreateInstanceResponse | Job>("/api/instances", {
     method: "POST",
     body: JSON.stringify(payload)
+  });
+}
+
+export async function listTemplates(params: {
+  profileId?: string;
+  region?: string;
+  compartmentId?: string;
+  status?: string;
+  validationStatus?: string;
+  q?: string;
+} = {}): Promise<InstanceTemplate[]> {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value) query.set(key, value);
+  });
+  const response = await request<ListResponse<InstanceTemplate>>(`/api/templates${query.toString() ? `?${query.toString()}` : ""}`);
+  return response.items;
+}
+
+export async function createTemplate(payload: TemplatePayload): Promise<InstanceTemplate> {
+  return request<InstanceTemplate>("/api/templates", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function getTemplate(templateId: string): Promise<InstanceTemplate> {
+  return request<InstanceTemplate>(`/api/templates/${encodeURIComponent(templateId)}`);
+}
+
+export async function updateTemplate(templateId: string, payload: Partial<TemplatePayload>): Promise<InstanceTemplate> {
+  return request<InstanceTemplate>(`/api/templates/${encodeURIComponent(templateId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function deleteTemplate(templateId: string): Promise<void> {
+  await request<unknown>(`/api/templates/${encodeURIComponent(templateId)}`, {
+    method: "DELETE"
+  });
+}
+
+export async function validateTemplate(templateId: string): Promise<TemplateValidationResult> {
+  return request<TemplateValidationResult>(`/api/templates/${encodeURIComponent(templateId)}/validate`, {
+    method: "POST",
+    body: JSON.stringify({})
   });
 }
 

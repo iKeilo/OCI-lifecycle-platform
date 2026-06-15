@@ -1429,15 +1429,24 @@ POST   /api/instances/sync
 
 ### 12.3 Template APIs
 
+当前已实现的模板接口只用于保存创建实例表单预输入，不调用 OCI API，也不需要密钥验证：
+
 ```text
 GET    /api/templates
 POST   /api/templates
 GET    /api/templates/{id}
 PATCH  /api/templates/{id}
+DELETE /api/templates/{id}
+POST   /api/templates/{id}/validate
+```
+
+后续可扩展接口：
+
+```text
+GET    /api/templates/{id}/versions
 POST   /api/templates/{id}/versions
 POST   /api/templates/from-instance/{instanceId}
-POST   /api/templates/{id}/launch
-DELETE /api/templates/{id}
+POST   /api/templates/from-job/{jobId}
 ```
 
 ### 12.4 Pool APIs
@@ -1741,4 +1750,3 @@ Audit Logs
 - https://docs.oracle.com/en-us/iaas/Content/Security/Reference/iam_security_topic-IAM_Security_Policies.htm
 - https://docs.oracle.com/en-us/iaas/Content/Monitoring/Concepts/monitoringoverview.htm
 - https://docs.oracle.com/iaas/Content/GSG/Tasks/usingaudit.htm
-

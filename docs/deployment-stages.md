@@ -1,6 +1,6 @@
 # 阶段化部署与实施状态
 
-更新日期：2026-06-10
+更新日期：2026-06-14
 
 目标是建设一套 **OCI 机器生命周期控制平台**。所有影响 OCI 资源的操作都必须走真实 Oracle SDK/API、任务队列、审计记录和可验证的执行结果。本地模式只用于开发与 UI 验证，不能当作真实 OCI 验收。
 
@@ -163,13 +163,13 @@ npm run build
 
 尚未落地：
 
-- Template CRUD 和版本化。
+- 模板版本化、模板使用历史、从实例/任务反向生成模板。
 - Automation repository 和真实调度器。
 - 定时策略、指标策略、容量重试策略。
 - Work Request 精确恢复。
-- Audit 查询、筛选、导出 API。
+- Audit 导出 API。
 - RBAC、审批流、预算护栏。
-- 通知渠道：Webhook。
+- Webhook 对真实外部 URL 的专项投递验证。
 - Instance Configuration / Instance Pool / Autoscaling。
 - 已有实例上的保留公网 IP 绑定、解绑、释放操作页面。
 
@@ -177,7 +177,7 @@ npm run build
 
 1. 接 PostgreSQL 环境，验证 Profile/Job/Instance 重启恢复。
 2. 做 Audit 查询页面和导出。
-3. 做 Template CRUD，再接自动化调度器。
+3. 在已落地的 Template CRUD 基础上补模板版本化，再接自动化调度器。
 4. 补齐已有实例上的保留公网 IP 绑定、解绑、释放 UI。
 5. 做 Webhook 通知渠道。
 6. 做 Instance Configuration / Instance Pool / Autoscaling。
@@ -231,3 +231,37 @@ npm run build
 - 创建实例页切换 Shape、AD、Compartment、VCN 时会自动刷新 Launch Options；Shape 变化会刷新兼容 Image 列表，避免旧镜像与新 Shape 不兼容。
 - 创建实例页预算估算已显示明确状态：免费额度、已估算、粗估、等待启动盘用量、价格未接入。
 - 仍需接统一后端价格表，替代前端临时估算；未知 Shape 必须继续显示“价格未接入”原因。
+
+## 2026-06-14 模板管理回归增量更新
+
+已新增落地：
+
+- 左侧导航恢复“模板管理”。
+- 新增 `/templates` 页面：模板列表、筛选、新建、编辑、复制、删除和字段检查。
+- 创建实例页新增“模板预输入”区：可选择模板、应用到当前表单、清空模板、将当前配置保存为模板。
+- “新建模板”改为进入 `/templates/new`，在模板管理内调用真实 Launch Options，使用上下文、镜像规格、网络访问、公网 IPv4/IPv6 开关，最后保存为模板。
+- “编辑模板”进入 `/templates/{templateId}/edit`，不跳转创建实例页。
+- 模板支持设置默认实例名称；使用模板创建机器时前端会预填实例名，后端也会从模板配置兜底补齐。
+- 模板模式不再提供 OCI 资源字段手写 fallback；Profile、Region、Compartment、AD、Image、Shape、VCN、Subnet、Reserved IP 使用真实选项下拉或禁用占位。
+- 模板模式的 OCPU、内存由 Shape min/max 生成可选项，固定规格 Shape 会冻结输入；启动盘大小改为预设选项。
+- 模板模式不展示标签与重试策略，不要求用户手写 SSH Key 或 cloud-init 文本。
+- 后端新增模板 CRUD：`GET/POST /api/templates`、`GET/PATCH/DELETE /api/templates/{id}`、`POST /api/templates/{id}/validate`。
+- 模板新增 `config_format` / `config_text`，支持 JSON 与简单 YAML 配置解析。
+- 模板持久化接入 PostgreSQL `instance_templates` 表；无 PostgreSQL 时接入本地 file profile store。
+- 服务启动时会从数据库或本地 file store 恢复模板。
+- 创建实例任务支持 `templateId`，Job input 记录模板来源。
+- 已移除默认 seed/demo 模板；无用户模板时返回空列表。
+
+边界校准：
+
+- 模板只作为创建实例表单预输入，不调用 OCI API。
+- 模板创建、编辑、复制、删除不需要 OCI 密钥。
+- `POST /api/templates/{id}/validate` 只做本地字段完整性检查，不做真实 OCI 兼容性验证。
+- 真实 OCI 检查仍发生在提交创建实例任务之后，由既有 OCI executor 执行。
+
+仍需后续增强：
+
+- 模板详情页、版本化和使用历史。
+- 从已有实例生成模板。
+- 从成功创建任务生成模板。
+- 自动化规则引用模板。

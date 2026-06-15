@@ -27,9 +27,10 @@ type Sink struct {
 }
 
 type profileStoreFile struct {
-	Version  int                        `json:"version"`
-	Profiles map[string]profileRow      `json:"profiles"`
-	Settings map[string]json.RawMessage `json:"settings,omitempty"`
+	Version   int                                `json:"version"`
+	Profiles  map[string]profileRow              `json:"profiles"`
+	Templates map[string]domain.InstanceTemplate `json:"templates,omitempty"`
+	Settings  map[string]json.RawMessage         `json:"settings,omitempty"`
 }
 
 type profileRow struct {
@@ -46,9 +47,10 @@ func New(path string) (*Sink, error) {
 	s := &Sink{
 		path: path,
 		data: profileStoreFile{
-			Version:  1,
-			Profiles: map[string]profileRow{},
-			Settings: map[string]json.RawMessage{},
+			Version:   1,
+			Profiles:  map[string]profileRow{},
+			Templates: map[string]domain.InstanceTemplate{},
+			Settings:  map[string]json.RawMessage{},
 		},
 	}
 	if err := s.load(); err != nil {
@@ -151,6 +153,54 @@ func (s *Sink) DeleteProfile(profileID string) error {
 	defer s.mu.Unlock()
 
 	delete(s.data.Profiles, profileID)
+	return s.flushLocked()
+}
+
+func (s *Sink) SaveTemplate(template domain.InstanceTemplate) error {
+	if s == nil {
+		return store.ErrNotFound
+	}
+	if strings.TrimSpace(template.ID) == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.data.Templates == nil {
+		s.data.Templates = map[string]domain.InstanceTemplate{}
+	}
+	s.data.Templates[template.ID] = template
+	return s.flushLocked()
+}
+
+func (s *Sink) ListTemplates() ([]domain.InstanceTemplate, error) {
+	if s == nil {
+		return nil, store.ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]domain.InstanceTemplate, 0, len(s.data.Templates))
+	for _, template := range s.data.Templates {
+		if strings.TrimSpace(template.ID) == "" {
+			continue
+		}
+		out = append(out, template)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Region == out[j].Region {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Region < out[j].Region
+	})
+	return out, nil
+}
+
+func (s *Sink) DeleteTemplate(templateID string) error {
+	if s == nil {
+		return store.ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.data.Templates, templateID)
 	return s.flushLocked()
 }
 
@@ -279,6 +329,9 @@ func (s *Sink) load() error {
 	}
 	if s.data.Profiles == nil {
 		s.data.Profiles = map[string]profileRow{}
+	}
+	if s.data.Templates == nil {
+		s.data.Templates = map[string]domain.InstanceTemplate{}
 	}
 	if s.data.Settings == nil {
 		s.data.Settings = map[string]json.RawMessage{}

@@ -104,6 +104,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/profiles/{id}/disable", s.handleDisableProfile)
 	s.mux.HandleFunc("DELETE /api/profiles/{id}", s.handleDeleteProfile)
 	s.mux.HandleFunc("GET /api/templates", s.handleTemplates)
+	s.mux.HandleFunc("POST /api/templates", s.handleCreateTemplate)
+	s.mux.HandleFunc("GET /api/templates/{id}", s.handleTemplate)
+	s.mux.HandleFunc("PATCH /api/templates/{id}", s.handleUpdateTemplate)
+	s.mux.HandleFunc("DELETE /api/templates/{id}", s.handleDeleteTemplate)
+	s.mux.HandleFunc("POST /api/templates/{id}/validate", s.handleValidateTemplate)
 	s.mux.HandleFunc("GET /api/launch-options", s.handleLaunchOptions)
 	s.mux.HandleFunc("GET /api/instances", s.handleInstances)
 	s.mux.HandleFunc("POST /api/instances", s.handleCreateInstance)
@@ -465,9 +470,77 @@ func (s *Server) handleDeleteProfile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTemplates(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"items": s.store.ListTemplates(),
+	query := r.URL.Query()
+	items := s.store.ListTemplatesFiltered(domain.TemplateFilter{
+		ProfileID:        query.Get("profileId"),
+		Region:           query.Get("region"),
+		CompartmentID:    query.Get("compartmentId"),
+		Status:           query.Get("status"),
+		ValidationStatus: query.Get("validationStatus"),
+		Query:            query.Get("q"),
+		Limit:            parsePositiveInt(query.Get("limit")),
+		IncludeDeleted:   strings.EqualFold(query.Get("includeDeleted"), "true") || query.Get("includeDeleted") == "1",
 	})
+	for i := range items {
+		items[i] = redactTemplate(items[i])
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items,
+	})
+}
+
+func (s *Server) handleCreateTemplate(w http.ResponseWriter, r *http.Request) {
+	var req domain.CreateTemplateRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+		return
+	}
+	template, err := s.store.CreateTemplate(req, actorFromRequest(r))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, redactTemplate(template))
+}
+
+func (s *Server) handleTemplate(w http.ResponseWriter, r *http.Request) {
+	template, ok := s.store.GetTemplate(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "TEMPLATE_NOT_FOUND", "template not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, redactTemplate(template))
+}
+
+func (s *Server) handleUpdateTemplate(w http.ResponseWriter, r *http.Request) {
+	var req domain.UpdateTemplateRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+		return
+	}
+	template, err := s.store.UpdateTemplate(r.PathValue("id"), req, actorFromRequest(r))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, redactTemplate(template))
+}
+
+func (s *Server) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DeleteTemplate(r.PathValue("id"), actorFromRequest(r)); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleValidateTemplate(w http.ResponseWriter, r *http.Request) {
+	result, err := s.store.ValidateTemplate(r.PathValue("id"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleLaunchOptions(w http.ResponseWriter, r *http.Request) {
@@ -1078,6 +1151,14 @@ func sanitizeJob(job domain.Job) domain.Job {
 	}
 	job.Input = input
 	return job
+}
+
+func redactTemplate(template domain.InstanceTemplate) domain.InstanceTemplate {
+	if strings.TrimSpace(template.CloudInit) != "" {
+		template.CloudInitSet = true
+	}
+	template.CloudInit = ""
+	return template
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

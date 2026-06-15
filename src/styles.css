@@ -796,6 +796,13 @@ kbd {
   background: rgba(255, 255, 255, 0.92);
 }
 
+.secondary-button.compact {
+  min-height: 34px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
 .link-button {
   min-height: auto;
   padding: 0;
@@ -1979,6 +1986,38 @@ kbd {
   align-items: start;
 }
 
+.template-editor-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.template-editor-card {
+  display: grid;
+  gap: 22px;
+  padding: 22px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.template-editor-card .wizard-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+}
+
+.template-editor-card .wizard-heading h2 {
+  margin: 0;
+}
+
+.template-editor-card .wizard-heading p {
+  margin: 8px 0 0;
+  color: var(--muted);
+}
+
+.template-editor-card .form-section {
+  margin-top: 0;
+}
+
 .wizard-steps {
   display: grid;
   align-content: start;
@@ -2771,6 +2810,23 @@ td {
   max-width: 360px;
 }
 
+.template-prefill-row {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) repeat(3, auto);
+  gap: 12px;
+  align-items: end;
+}
+
+.template-prefill-row label {
+  min-width: 0;
+}
+
+.status-stack {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
 .network-toolbar {
   display: block;
   overflow: hidden;
@@ -2980,6 +3036,10 @@ td {
     width: 100%;
     flex-wrap: wrap;
     justify-content: flex-start;
+  }
+
+  .template-prefill-row {
+    grid-template-columns: 1fr;
   }
 }
 

@@ -1,6 +1,6 @@
 # Go 后端 API 说明
 
-更新日期：2026-06-10
+更新日期：2026-06-14
 
 后端位于 `backend/`，使用 Go 标准库 HTTP server 和 Oracle 官方 Go SDK。真实 OCI 能力只在 `OCI_EXECUTION_MODE=oci` 下执行；`local` 模式仅用于工程联调。
 
@@ -56,6 +56,11 @@ POST   /api/profiles/{id}/disable
 DELETE /api/profiles/{id}
 
 GET    /api/templates
+POST   /api/templates
+GET    /api/templates/{id}
+PATCH  /api/templates/{id}
+DELETE /api/templates/{id}
+POST   /api/templates/{id}/validate
 GET    /api/launch-options
 
 GET    /api/instances
@@ -169,6 +174,92 @@ Subnet 选项会返回：
 }
 ```
 
+## 模板管理
+
+模板只保存创建实例表单的预输入值，不调用 OCI API，也不需要 OCI 密钥。模板字段检查只做本地完整性检查；真实 OCI 兼容、权限、容量和配额检查发生在最终创建实例任务中。
+
+```http
+GET /api/templates?profileId=profile-default&region=ap-chuncheon-1&q=worker
+```
+
+可选查询参数：
+
+- `profileId`
+- `region`
+- `status`
+- `q`
+- `limit`
+
+```http
+POST /api/templates
+Content-Type: application/json
+```
+
+```json
+{
+  "name": "ubuntu-worker",
+  "description": "常用工作节点预输入",
+  "version": "v1",
+  "profileId": "profile-default",
+  "region": "ap-chuncheon-1",
+  "compartmentId": "ocid1.tenancy...",
+  "availabilityAd": "",
+  "imageId": "",
+  "imageName": "Canonical Ubuntu",
+  "shape": "VM.Standard.E3.Flex",
+  "ocpus": 1,
+  "memoryGb": 1,
+  "bootVolumeGb": 50,
+  "bootVolumeVpusPerGb": 10,
+  "vcnId": "",
+  "subnetId": "",
+  "assignPublicIp": true,
+  "enableIpv6": false,
+  "reservedPublicIp": "",
+  "sshKey": "",
+  "cloudInit": "",
+  "tags": {
+    "managedBy": "oci-lifecycle-platform"
+  },
+  "configFormat": "json",
+  "configText": "{\n  \"context\": {},\n  \"imageAndShape\": {},\n  \"networkAndAccess\": {}\n}",
+  "status": "ACTIVE"
+}
+```
+
+已实现操作：
+
+```text
+GET    /api/templates
+POST   /api/templates
+GET    /api/templates/{id}
+PATCH  /api/templates/{id}
+DELETE /api/templates/{id}
+POST   /api/templates/{id}/validate
+```
+
+`POST /api/templates/{id}/validate` 行为：
+
+- 不访问 OCI。
+- 不读取 PEM。
+- 字段完整返回 `verified=true`。
+- 字段缺失返回 HTTP 200 + `verified=false`，并返回缺失字段提示。
+- `configFormat=json|yaml` 与 `configText` 用于保存创建实例预输入配置；调用模板时后端优先解析配置文本，再合并当前请求覆盖字段。
+
+创建实例时可传入 `templateId`：
+
+```json
+{
+  "templateId": "tpl-worker-v1",
+  "name": "worker-01",
+  "profileId": "profile-default",
+  "region": "ap-chuncheon-1",
+  "shape": "VM.Standard.E3.Flex"
+}
+```
+
+后端会将模板字段作为预输入来源，再用当前请求中的非空字段覆盖。最终 Job input 会记录 `templateId`，但真实创建仍以提交时的表单参数为准。
+
 ## 创建实例
 
 ```http
@@ -179,6 +270,7 @@ Content-Type: application/json
 ```json
 {
   "name": "oci-worker-01",
+  "templateId": "tpl-worker-v1",
   "profileId": "profile-default",
   "region": "ap-chuncheon-1",
   "compartmentId": "ocid1.tenancy...",
@@ -434,7 +526,7 @@ go run ./cmd/oci-ipv6-orch-smoke \
 - PostgreSQL 真实环境迁移/恢复尚未在本机验证。
 - Web 上传 PEM 建议改为 multipart。
 - Work Request 精确恢复未实现。
-- Template CRUD 未实现。
+- Template CRUD 已实现；模板版本化、使用历史、从实例/任务反向生成模板尚未实现。
 - Automation 调度器未实现。
 - Audit 查询已实现；导出未实现。
 - RBAC、审批未实现。
