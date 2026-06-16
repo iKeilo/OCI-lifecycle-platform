@@ -2,9 +2,13 @@ package oci
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"a-series-oracle/backend/internal/domain"
@@ -13,6 +17,24 @@ import (
 	"github.com/oracle/oci-go-sdk/v65/core"
 	"github.com/oracle/oci-go-sdk/v65/identity"
 )
+
+var shapeImageCatalogs = struct {
+	sync.Mutex
+	items map[string]shapeImageCatalog
+}{
+	items: map[string]shapeImageCatalog{},
+}
+
+type shapeImageCatalog struct {
+	Key              string
+	ShapeFingerprint string
+	ShapeImages      map[string][]domain.LaunchOption
+	LastCheckedAt    time.Time
+	LastChangedAt    time.Time
+	CacheState       string
+	ErrorCode        string
+	ErrorMessage     string
+}
 
 type LaunchOptionsRequest struct {
 	ProfileID          string `json:"profileId"`
@@ -68,7 +90,18 @@ func DiscoverLaunchOptions(ctx context.Context, cfg ReadinessConfig, req LaunchO
 		result.ErrorMessage = err.Error()
 		return result
 	}
-	if err := discoverImages(ctx, clients, req, &result); err != nil {
+	catalog, err := discoverShapeImageCatalog(clients, req, result.CompartmentID, result.Shapes)
+	result.ShapeImages = catalog.ShapeImages
+	result.ShapeFingerprint = catalog.ShapeFingerprint
+	result.CacheState = catalog.CacheState
+	result.CacheCheckedAt = catalog.LastCheckedAt
+	result.CacheChangedAt = catalog.LastChangedAt
+	if catalog.ErrorCode != "" && result.ErrorCode == "" && len(result.ShapeImages) == 0 && catalog.CacheState != "INITIALIZING" {
+		result.ErrorCode = catalog.ErrorCode
+		result.ErrorMessage = catalog.ErrorMessage
+	}
+	result.Images = imagesForShape(req.Shape, result.Shapes, result.ShapeImages)
+	if err != nil && len(result.Images) == 0 {
 		result.ErrorCode = "OCI_LIST_IMAGES_FAILED"
 		result.ErrorMessage = err.Error()
 		return result
@@ -215,6 +248,188 @@ func discoverShapes(ctx context.Context, clients Clients, req LaunchOptionsReque
 	}
 	sort.Slice(result.Shapes, func(i, j int) bool { return result.Shapes[i].Name < result.Shapes[j].Name })
 	return nil
+}
+
+func discoverShapeImageCatalog(clients Clients, req LaunchOptionsRequest, compartmentID string, shapes []domain.ShapeOption) (shapeImageCatalog, error) {
+	now := time.Now().UTC()
+	key := launchCatalogKey(req, compartmentID)
+	fingerprint := shapeOptionsFingerprint(shapes)
+	if key == "" || fingerprint == "" {
+		return shapeImageCatalog{
+			Key:              key,
+			ShapeFingerprint: fingerprint,
+			ShapeImages:      map[string][]domain.LaunchOption{},
+			LastCheckedAt:    now,
+			CacheState:       "MISS",
+		}, nil
+	}
+
+	shapeImageCatalogs.Lock()
+	cached, hasCached := shapeImageCatalogs.items[key]
+	if hasCached && cached.ShapeFingerprint == fingerprint {
+		cached.LastCheckedAt = now
+		if cached.CacheState != "INITIALIZING" && len(cached.ShapeImages) > 0 {
+			cached.CacheState = "HIT"
+		}
+		shapeImageCatalogs.items[key] = cloneShapeImageCatalog(cached)
+		shapeImageCatalogs.Unlock()
+		return cloneShapeImageCatalog(cached), nil
+	}
+
+	initial := shapeImageCatalog{
+		Key:              key,
+		ShapeFingerprint: fingerprint,
+		ShapeImages:      map[string][]domain.LaunchOption{},
+		LastCheckedAt:    now,
+		LastChangedAt:    now,
+		CacheState:       "INITIALIZING",
+	}
+	if hasCached && len(cached.ShapeImages) > 0 {
+		initial.ShapeImages = cloneShapeImages(cached.ShapeImages)
+	}
+	shapeImageCatalogs.items[key] = cloneShapeImageCatalog(initial)
+	shapeImageCatalogs.Unlock()
+
+	go warmShapeImageCatalog(clients, key, compartmentID, fingerprint, shapes)
+	return cloneShapeImageCatalog(initial), nil
+}
+
+func warmShapeImageCatalog(clients Clients, key string, compartmentID string, fingerprint string, shapes []domain.ShapeOption) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+
+	shapeImages := map[string][]domain.LaunchOption{}
+	var firstErr error
+	var requestIDs []string
+	for _, shape := range shapes {
+		shapeName := strings.TrimSpace(shape.Name)
+		if shapeName == "" {
+			continue
+		}
+		images, err := discoverImagesForShape(ctx, clients, compartmentID, shapeName, &requestIDs)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		shapeImages[shapeName] = images
+	}
+
+	now := time.Now().UTC()
+	catalog := shapeImageCatalog{
+		Key:              key,
+		ShapeFingerprint: fingerprint,
+		ShapeImages:      shapeImages,
+		LastCheckedAt:    now,
+		LastChangedAt:    now,
+		CacheState:       "READY",
+	}
+	if firstErr != nil {
+		catalog.ErrorCode = "OCI_LIST_SHAPE_IMAGES_PARTIAL_FAILED"
+		catalog.ErrorMessage = firstErr.Error()
+		catalog.CacheState = "PARTIAL"
+	}
+
+	shapeImageCatalogs.Lock()
+	current, ok := shapeImageCatalogs.items[key]
+	if ok && current.ShapeFingerprint == fingerprint {
+		if len(shapeImages) == 0 && len(current.ShapeImages) > 0 {
+			current.LastCheckedAt = now
+			current.CacheState = "STALE"
+			current.ErrorCode = catalog.ErrorCode
+			current.ErrorMessage = catalog.ErrorMessage
+			shapeImageCatalogs.items[key] = cloneShapeImageCatalog(current)
+			shapeImageCatalogs.Unlock()
+			return
+		}
+		shapeImageCatalogs.items[key] = cloneShapeImageCatalog(catalog)
+	}
+	shapeImageCatalogs.Unlock()
+}
+
+func discoverImagesForShape(ctx context.Context, clients Clients, compartmentID string, shape string, requestIDs *[]string) ([]domain.LaunchOption, error) {
+	listReq := core.ListImagesRequest{
+		CompartmentId:  common.String(compartmentID),
+		LifecycleState: core.ImageLifecycleStateAvailable,
+		SortBy:         core.ListImagesSortByTimecreated,
+		SortOrder:      core.ListImagesSortOrderDesc,
+		Limit:          common.Int(50),
+		Shape:          common.String(shape),
+	}
+	resp, err := clients.Compute.ListImages(ctx, listReq)
+	appendRequestID(requestIDs, resp.OpcRequestId)
+	if err != nil {
+		return nil, err
+	}
+	images := make([]domain.LaunchOption, 0, len(resp.Items))
+	for _, item := range resp.Items {
+		id := stringValue(item.Id)
+		if id == "" {
+			continue
+		}
+		label := defaultString(stringValue(item.DisplayName), id)
+		osName := strings.TrimSpace(stringValue(item.OperatingSystem) + " " + stringValue(item.OperatingSystemVersion))
+		if osName != "" {
+			label = label + " / " + osName
+		}
+		images = append(images, domain.LaunchOption{
+			ID:    id,
+			Label: label,
+		})
+	}
+	sortLaunchOptions(images)
+	return images, nil
+}
+
+func imagesForShape(shape string, shapes []domain.ShapeOption, shapeImages map[string][]domain.LaunchOption) []domain.LaunchOption {
+	shape = strings.TrimSpace(shape)
+	if shape == "" && len(shapes) > 0 {
+		shape = strings.TrimSpace(shapes[0].Name)
+	}
+	if shape == "" || len(shapeImages) == 0 {
+		return []domain.LaunchOption{}
+	}
+	return append([]domain.LaunchOption(nil), shapeImages[shape]...)
+}
+
+func launchCatalogKey(req LaunchOptionsRequest, compartmentID string) string {
+	parts := []string{
+		strings.TrimSpace(req.ProfileID),
+		strings.TrimSpace(req.Region),
+		strings.TrimSpace(compartmentID),
+		strings.TrimSpace(req.AvailabilityDomain),
+	}
+	if parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
+
+func shapeOptionsFingerprint(shapes []domain.ShapeOption) string {
+	normalized := append([]domain.ShapeOption(nil), shapes...)
+	sort.Slice(normalized, func(i, j int) bool { return normalized[i].Name < normalized[j].Name })
+	data, err := json.Marshal(normalized)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func cloneShapeImageCatalog(catalog shapeImageCatalog) shapeImageCatalog {
+	out := catalog
+	out.ShapeImages = cloneShapeImages(catalog.ShapeImages)
+	return out
+}
+
+func cloneShapeImages(in map[string][]domain.LaunchOption) map[string][]domain.LaunchOption {
+	out := map[string][]domain.LaunchOption{}
+	for shape, images := range in {
+		out[shape] = append([]domain.LaunchOption(nil), images...)
+	}
+	return out
 }
 
 func discoverImages(ctx context.Context, clients Clients, req LaunchOptionsRequest, result *domain.LaunchOptions) error {

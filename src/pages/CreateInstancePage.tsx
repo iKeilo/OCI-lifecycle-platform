@@ -85,6 +85,8 @@ export function CreateInstancePage() {
     [shape, ocpus, memoryGb, bootVolumeGb, bootVolumeVpusPerGb, bootVolumeUsage, inventoryBootVolumeGb, inventoryInstances, selectedShape]
   );
   const bootVolumeUsageLabel = formatBootVolumeUsageLabel(bootVolumeUsage, inventoryBootVolumeGb);
+  const launchCatalogStatus = formatLaunchCatalogStatus(options);
+  const isLaunchCatalogInitializing = options?.cacheState === "INITIALIZING";
 
   useEffect(() => {
     async function load() {
@@ -131,8 +133,16 @@ export function CreateInstancePage() {
     setMemoryGb((current) => clampShapeValue(current, selectedShape.minMemoryGb, selectedShape.maxMemoryGb));
   }, [selectedShape?.name, selectedShape?.minOcpus, selectedShape?.maxOcpus, selectedShape?.minMemoryGb, selectedShape?.maxMemoryGb]);
 
+  useEffect(() => {
+    if (!isLaunchCatalogInitializing || isRefreshingOptions) return;
+    const timer = window.setTimeout(() => {
+      void refreshLaunchOptionsForContext();
+    }, 15000);
+    return () => window.clearTimeout(timer);
+  }, [isLaunchCatalogInitializing, isRefreshingOptions, profileId, region, compartmentId, availabilityAd]);
+
   function applyLoadedOptions(launchOptions: LaunchOptions, preferredShape = shape) {
-    const normalizedOptions = keepSelectedShapeOption(launchOptions, options, preferredShape, shapeCatalogRef.current);
+    const normalizedOptions = withImagesForShape(keepSelectedShapeOption(launchOptions, options, preferredShape, shapeCatalogRef.current), preferredShape);
     shapeCatalogRef.current = mergeShapeLists(shapeCatalogRef.current, normalizedOptions.shapes);
     setOptions(normalizedOptions);
     setBootVolumeUsage(normalizedOptions.bootVolumeUsage ?? null);
@@ -220,12 +230,15 @@ export function CreateInstancePage() {
 
   function applyShape(nextShape: string) {
     setShape(nextShape);
-    const shapeOption = options?.shapes.find((item) => item.name === nextShape);
+    const nextOptions = options ? withImagesForShape(options, nextShape) : null;
+    if (nextOptions) setOptions(nextOptions);
+    const shapeOption = nextOptions?.shapes.find((item) => item.name === nextShape);
     if (shapeOption) {
       setOcpus((current) => clampShapeValue(current, shapeOption.minOcpus, shapeOption.maxOcpus));
       setMemoryGb((current) => clampShapeValue(current, shapeOption.minMemoryGb, shapeOption.maxMemoryGb));
     }
-    void refreshLaunchOptionsForContext({ shape: nextShape });
+    const nextImages = nextOptions?.images ?? [];
+    setImageId((current) => (nextImages.some((item) => item.id === current) ? current : nextImages[0]?.id ?? ""));
   }
 
   function applyTemplate(template: InstanceTemplate) {
@@ -456,11 +469,17 @@ export function CreateInstancePage() {
                   <h2>真实创建参数</h2>
                   <p>选择上下文后刷新可用选项；没有密钥或权限时会显示后端返回的真实错误。</p>
                 </div>
-                <button className="secondary-button" disabled={isRefreshingOptions} onClick={() => void refreshRealOptions()}>
+                <button className="secondary-button" disabled={isRefreshingOptions || isLaunchCatalogInitializing} onClick={() => void refreshRealOptions()}>
                   <RefreshCw size={18} />
-                  {isRefreshingOptions ? "刷新中..." : "刷新选项"}
+                  {isLaunchCatalogInitializing ? "初始化中..." : isRefreshingOptions ? "刷新中..." : "刷新选项"}
                 </button>
               </div>
+
+              {isLaunchCatalogInitializing ? (
+                <div className="inline-success">
+                  正在初始化 Shape/Image 选项目录，所需时间较长。系统会自动检查完成状态，请不要反复刷新，以免产生不必要的 OCI API 调用。
+                </div>
+              ) : null}
 
               {options.errorMessage ? (
                 <div className="inline-error">
@@ -659,7 +678,7 @@ export function CreateInstancePage() {
                         <option value="">{isTemplateMode ? "请先刷新真实兼容镜像选项" : "暂无兼容镜像"}</option>
                       </select>
                     )}
-                    {isRefreshingOptions ? <span className="label-hint label-hint-left">正在刷新兼容镜像...</span> : null}
+                    {isLaunchCatalogInitializing ? <span className="label-hint label-hint-left">正在初始化兼容镜像目录...</span> : isRefreshingOptions ? <span className="label-hint label-hint-left">正在刷新兼容镜像...</span> : null}
                   </label>
                   <label>
                     Shape
@@ -760,6 +779,7 @@ export function CreateInstancePage() {
                   </div>
                 </div>
                 {selectedShape ? <ShapeHint shape={selectedShape} /> : null}
+                {launchCatalogStatus ? <p className="muted-line">{launchCatalogStatus}</p> : null}
               </div>
 
               <div className="form-section">
@@ -1005,7 +1025,7 @@ export function CreateInstancePage() {
               {errorMessage ? <div className="inline-error">{errorMessage}</div> : null}
 
               <div className="button-row">
-                <button className="primary-button" disabled={isSubmitting || isRefreshingOptions || !profileId || !name || !shape} onClick={handleSubmit}>
+                <button className="primary-button" disabled={isSubmitting || isRefreshingOptions || isLaunchCatalogInitializing || !profileId || !name || !shape} onClick={handleSubmit}>
                   {isSubmitting || isSavingTemplate ? (isTemplateMode ? "保存中..." : "提交中...") : isTemplateMode ? editTemplateId ? "更新模板" : "创建模板" : "创建实例任务"}
                 </button>
               </div>
@@ -1148,6 +1168,42 @@ function shapeOptionLabel(shape: ShapeOption) {
   return isAlwaysFreeShape(shape.name) ? `${shape.name} / Free` : shape.name;
 }
 
+function withImagesForShape(options: LaunchOptions, shapeName: string): LaunchOptions {
+  const scopedImages = imagesForShape(options, shapeName);
+  return scopedImages === options.images ? options : { ...options, images: scopedImages };
+}
+
+function imagesForShape(options: LaunchOptions, shapeName: string): LaunchOption[] {
+  const normalizedShape = shapeName.trim() || options.shapes[0]?.name || "";
+  const mappedImages = normalizedShape ? options.shapeImages?.[normalizedShape] : undefined;
+  return mappedImages ? [...mappedImages] : options.images ?? [];
+}
+
+function formatLaunchCatalogStatus(options: LaunchOptions | null) {
+  if (!options?.cacheState) return "";
+  const checkedAt = options.cacheCheckedAt ? new Date(options.cacheCheckedAt) : null;
+  const checkedText = checkedAt && !Number.isNaN(checkedAt.getTime()) ? ` / 上次探查 ${checkedAt.toLocaleString()}` : "";
+  const imageCount = Object.values(options.shapeImages ?? {}).reduce((sum, images) => sum + images.length, 0);
+  return `选项目录：${launchCatalogStateLabel(options.cacheState)}${checkedText} / ${options.shapes.length} 个 Shape / ${imageCount} 个绑定镜像`;
+}
+
+function launchCatalogStateLabel(state: string) {
+  switch (state) {
+    case "INITIALIZING":
+      return "正在初始化";
+    case "HIT":
+      return "已缓存";
+    case "READY":
+      return "已就绪";
+    case "PARTIAL":
+      return "部分完成";
+    case "STALE":
+      return "使用旧缓存";
+    default:
+      return state;
+  }
+}
+
 function keepSelectedShapeOption(
   launchOptions: LaunchOptions,
   previousOptions: LaunchOptions | null,
@@ -1223,6 +1279,7 @@ function boundedIntegerOptions(min: number | undefined, max: number | undefined,
   const safeMax = Number.isFinite(max) && Number(max) > 0 ? Math.floor(Number(max)) : safeCurrent;
   const lower = Math.min(safeMin, safeMax, safeCurrent);
   const upper = Math.max(safeMin, safeMax, safeCurrent);
+  if (upper - lower > 1024) return Array.from(new Set([safeMin, safeCurrent])).sort((a, b) => a - b);
   const values: number[] = [];
   for (let value = lower; value <= upper; value += 1) {
     values.push(value);

@@ -183,6 +183,10 @@ export type LaunchOptions = {
   profileId?: string;
   region?: string;
   compartmentId?: string;
+  cacheState?: string;
+  cacheCheckedAt?: string;
+  cacheChangedAt?: string;
+  shapeFingerprint?: string;
   requestIds?: string[];
   errorCode?: string;
   errorMessage?: string;
@@ -194,6 +198,7 @@ export type LaunchOptions = {
   availabilityAds: LaunchOption[];
   images: LaunchOption[];
   shapes: ShapeOption[];
+  shapeImages: Record<string, LaunchOption[]>;
   vcns: LaunchOption[];
   subnets: LaunchOption[];
   reservedIps: LaunchOption[];

@@ -1275,6 +1275,9 @@ func normalizeLaunchOptions(options *domain.LaunchOptions) {
 	if options.Shapes == nil {
 		options.Shapes = []domain.ShapeOption{}
 	}
+	if options.ShapeImages == nil {
+		options.ShapeImages = map[string][]domain.LaunchOption{}
+	}
 	if options.VCNs == nil {
 		options.VCNs = []domain.LaunchOption{}
 	}

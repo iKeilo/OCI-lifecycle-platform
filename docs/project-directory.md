@@ -77,6 +77,7 @@
 | `docs/github-release-packages.md` | GitHub Releases 与 GHCR Packages 发布说明。 |
 | `docs/budget-management-implementation.md` | 预算管理、预算熔断、超预算降配/删机的实施方案。 |
 | `docs/template-management-implementation.md` | 模板管理回归实施文档，定义模板为纯预输入功能。 |
+| `docs/launch-options-cache-implementation.md` | Shape/Image 选项目录缓存方案，定义用真实 OCI API 预存 Shape 与绑定 Image，前端优先读缓存。 |
 
 ## 部署入口
 

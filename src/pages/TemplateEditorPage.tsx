@@ -28,6 +28,7 @@ const emptyOptions: LaunchOptions = {
   availabilityAds: [],
   images: [],
   shapes: [],
+  shapeImages: {},
   vcns: [],
   subnets: [],
   reservedIps: [],
@@ -78,6 +79,8 @@ export function TemplateEditorPage() {
   const selectedImage = useMemo(() => optionLabel(options.images, imageId), [options.images, imageId]);
   const isOcpuFrozen = isFixedShapeRange(selectedShape?.minOcpus, selectedShape?.maxOcpus);
   const isMemoryFrozen = isFixedShapeRange(selectedShape?.minMemoryGb, selectedShape?.maxMemoryGb);
+  const launchCatalogStatus = formatLaunchCatalogStatus(options);
+  const isLaunchCatalogInitializing = options.cacheState === "INITIALIZING";
 
   useEffect(() => {
     let cancelled = false;
@@ -127,8 +130,16 @@ export function TemplateEditorPage() {
     setMemoryGb((current) => clampShapeValue(current, selectedShape.minMemoryGb, selectedShape.maxMemoryGb));
   }, [selectedShape?.name, selectedShape?.minOcpus, selectedShape?.maxOcpus, selectedShape?.minMemoryGb, selectedShape?.maxMemoryGb]);
 
+  useEffect(() => {
+    if (!isLaunchCatalogInitializing || isRefreshing) return;
+    const timer = window.setTimeout(() => {
+      void refreshOptions();
+    }, 15000);
+    return () => window.clearTimeout(timer);
+  }, [isLaunchCatalogInitializing, isRefreshing, profileId, region, compartmentId, availabilityAd]);
+
   function applyLoadedOptions(launchOptions: LaunchOptions, preferredShape = shape) {
-    const normalizedOptions = keepSelectedShapeOption(launchOptions, options, preferredShape, shapeCatalogRef.current);
+    const normalizedOptions = withImagesForShape(keepSelectedShapeOption(launchOptions, options, preferredShape, shapeCatalogRef.current), preferredShape);
     shapeCatalogRef.current = mergeShapeLists(shapeCatalogRef.current, normalizedOptions.shapes);
     setOptions(normalizedOptions);
     const firstProfile = normalizedOptions.profiles[0];
@@ -205,12 +216,15 @@ export function TemplateEditorPage() {
 
   function applyShape(nextShape: string) {
     setShape(nextShape);
-    const shapeOption = options.shapes.find((item) => item.name === nextShape);
+    const nextOptions = withImagesForShape(options, nextShape);
+    setOptions(nextOptions);
+    const shapeOption = nextOptions.shapes.find((item) => item.name === nextShape);
     if (shapeOption) {
       setOcpus((current) => clampShapeValue(current, shapeOption.minOcpus, shapeOption.maxOcpus));
       setMemoryGb((current) => clampShapeValue(current, shapeOption.minMemoryGb, shapeOption.maxMemoryGb));
     }
-    void refreshOptions({ shape: nextShape });
+    const nextImages = nextOptions.images;
+    setImageId((current) => (nextImages.some((item) => item.id === current) ? current : nextImages[0]?.id ?? ""));
   }
 
   async function handleSave() {
@@ -316,15 +330,21 @@ export function TemplateEditorPage() {
               <h2>模板选项</h2>
               <p>所有 OCI 资源配置都来自下拉、开关和 Shape 约束，不要求手写 OCID 或配置文件。</p>
             </div>
-            <button className="secondary-button" disabled={isRefreshing} onClick={() => void refreshOptions()}>
+            <button className="secondary-button" disabled={isRefreshing || isLaunchCatalogInitializing} onClick={() => void refreshOptions()}>
               <RefreshCw size={18} />
-              {isRefreshing ? "刷新中..." : "刷新选项"}
+              {isLaunchCatalogInitializing ? "初始化中..." : isRefreshing ? "刷新中..." : "刷新选项"}
             </button>
           </div>
 
           <AsyncState isLoading={isLoading} error={loadError} empty={false} />
           {!isLoading ? (
             <>
+              {isLaunchCatalogInitializing ? (
+                <div className="inline-success">
+                  正在初始化 Shape/Image 选项目录，所需时间较长。系统会自动检查完成状态，请不要反复刷新，以免产生不必要的 OCI API 调用。
+                </div>
+              ) : null}
+
               <div className="form-section">
                 <div className="form-section-title">
                   <CloudCog size={18} />
@@ -438,7 +458,7 @@ export function TemplateEditorPage() {
                 <div className="form-grid create-spec-grid">
                   <label className="span-two">
                     Image
-                    <select value={imageId} disabled={isRefreshing} onChange={(event) => setImageId(event.target.value)}>
+                    <select value={imageId} disabled={isRefreshing || isLaunchCatalogInitializing} onChange={(event) => setImageId(event.target.value)}>
                       <option value="">自动选择兼容镜像</option>
                       {options.images.map((item) => (
                         <option value={item.id} key={item.id}>
@@ -514,6 +534,7 @@ export function TemplateEditorPage() {
                   </div>
                 </div>
                 {selectedShape ? <p className="muted-line">{shapeSummary(selectedShape)}</p> : null}
+                {launchCatalogStatus ? <p className="muted-line">{launchCatalogStatus}</p> : null}
               </div>
 
               <div className="form-section">
@@ -602,7 +623,7 @@ export function TemplateEditorPage() {
               {errorMessage ? <div className="inline-error">{errorMessage}</div> : null}
 
               <div className="button-row">
-                <button className="primary-button" disabled={isSaving || isRefreshing || !canSave} onClick={() => void handleSave()}>
+                <button className="primary-button" disabled={isSaving || isRefreshing || isLaunchCatalogInitializing || !canSave} onClick={() => void handleSave()}>
                   <Save size={18} />
                   {isSaving ? "保存中..." : isEdit ? "更新模板" : "创建模板"}
                 </button>
@@ -649,6 +670,7 @@ function boundedIntegerOptions(min: number | undefined, max: number | undefined,
   const safeMax = Number.isFinite(max) && Number(max) > 0 ? Math.floor(Number(max)) : safeCurrent;
   const lower = Math.min(safeMin, safeMax, safeCurrent);
   const upper = Math.max(safeMin, safeMax, safeCurrent);
+  if (upper - lower > 1024) return Array.from(new Set([safeMin, safeCurrent])).sort((a, b) => a - b);
   const values: number[] = [];
   for (let value = lower; value <= upper; value += 1) values.push(value);
   return values.length > 0 ? values : [safeCurrent];
@@ -660,7 +682,7 @@ function bootVolumeOptions(current: number) {
 }
 
 function shapeRangeHint(min?: number, max?: number, frozen?: boolean) {
-  if (!Number.isFinite(min) || !Number.isFinite(max)) return "未知";
+  if (!Number.isFinite(min) || !Number.isFinite(max) || Number(min) <= 0 || Number(max) <= 0) return "未知";
   if (frozen) return `固定 ${min}`;
   return `${min}-${max}`;
 }
@@ -668,6 +690,42 @@ function shapeRangeHint(min?: number, max?: number, frozen?: boolean) {
 function shapeOptionLabel(shape: ShapeOption) {
   if (shape.arch === "selection-preserved") return `${shape.name} / 保留选择`;
   return ALWAYS_FREE_SHAPES.has(shape.name) ? `${shape.name} / Free` : shape.name;
+}
+
+function withImagesForShape(options: LaunchOptions, shapeName: string): LaunchOptions {
+  const scopedImages = imagesForShape(options, shapeName);
+  return scopedImages === options.images ? options : { ...options, images: scopedImages };
+}
+
+function imagesForShape(options: LaunchOptions, shapeName: string): LaunchOption[] {
+  const normalizedShape = shapeName.trim() || options.shapes[0]?.name || "";
+  const mappedImages = normalizedShape ? options.shapeImages?.[normalizedShape] : undefined;
+  return mappedImages ? [...mappedImages] : options.images ?? [];
+}
+
+function formatLaunchCatalogStatus(options: LaunchOptions) {
+  if (!options.cacheState) return "";
+  const checkedAt = options.cacheCheckedAt ? new Date(options.cacheCheckedAt) : null;
+  const checkedText = checkedAt && !Number.isNaN(checkedAt.getTime()) ? ` / 上次探查 ${checkedAt.toLocaleString()}` : "";
+  const imageCount = Object.values(options.shapeImages ?? {}).reduce((sum, images) => sum + images.length, 0);
+  return `选项目录：${launchCatalogStateLabel(options.cacheState)}${checkedText} / ${options.shapes.length} 个 Shape / ${imageCount} 个绑定镜像`;
+}
+
+function launchCatalogStateLabel(state: string) {
+  switch (state) {
+    case "INITIALIZING":
+      return "正在初始化";
+    case "HIT":
+      return "已缓存";
+    case "READY":
+      return "已就绪";
+    case "PARTIAL":
+      return "部分完成";
+    case "STALE":
+      return "使用旧缓存";
+    default:
+      return state;
+  }
 }
 
 function shapeSummary(shape: ShapeOption) {
@@ -688,10 +746,10 @@ function keepSelectedShapeOption(
     {
       name: normalizedShape,
       arch: "selection-preserved",
-      minOcpus: 1,
-      maxOcpus: Math.max(1, Number.MAX_SAFE_INTEGER),
-      minMemoryGb: 1,
-      maxMemoryGb: Math.max(1, Number.MAX_SAFE_INTEGER)
+      minOcpus: 0,
+      maxOcpus: 0,
+      minMemoryGb: 0,
+      maxMemoryGb: 0
     },
     ...shapes
   ];

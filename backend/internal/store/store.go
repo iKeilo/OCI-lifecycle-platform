@@ -2673,29 +2673,29 @@ func applyTemplateConfigMap(template *domain.InstanceTemplate, raw map[string]an
 	}
 	tags := mapFromAny(raw["tags"])
 
-	template.ProfileID = defaultString(stringFromMap(context, "profileId"), stringFromMap(raw, "profileId"))
-	template.Region = defaultString(stringFromMap(context, "region"), stringFromMap(raw, "region"))
-	template.Compartment = defaultString(stringFromMap(context, "compartment"), stringFromMap(raw, "compartment"))
-	template.CompartmentID = defaultString(stringFromMap(context, "compartmentId"), stringFromMap(raw, "compartmentId"))
-	template.AvailabilityAD = defaultString(stringFromMap(context, "availabilityAd"), stringFromMap(raw, "availabilityAd"))
-	template.ImageID = defaultString(stringFromMap(compute, "imageId"), stringFromMap(raw, "imageId"))
-	template.ImageName = defaultString(stringFromMap(compute, "imageName"), stringFromMap(raw, "imageName"))
-	template.Shape = defaultString(stringFromMap(compute, "shape"), stringFromMap(raw, "shape"))
-	template.OCPUs = defaultInt(intFromMap(compute, "ocpus"), intFromMap(raw, "ocpus"))
-	template.MemoryGB = defaultInt(intFromMap(compute, "memoryGb"), intFromMap(raw, "memoryGb"))
-	template.BootVolumeGB = defaultInt(intFromMap(compute, "bootVolumeGb"), intFromMap(raw, "bootVolumeGb"))
-	template.BootVolumeVPUsPerGB = defaultInt(intFromMap(compute, "bootVolumeVpusPerGb"), intFromMap(raw, "bootVolumeVpusPerGb"))
-	template.VCNID = defaultString(stringFromMap(network, "vcnId"), stringFromMap(raw, "vcnId"))
-	template.SubnetID = defaultString(stringFromMap(network, "subnetId"), stringFromMap(raw, "subnetId"))
+	template.ProfileID = defaultString(defaultString(stringFromMap(context, "profileId"), stringFromMap(raw, "profileId")), template.ProfileID)
+	template.Region = defaultString(defaultString(stringFromMap(context, "region"), stringFromMap(raw, "region")), template.Region)
+	template.Compartment = defaultString(defaultString(stringFromMap(context, "compartment"), stringFromMap(raw, "compartment")), template.Compartment)
+	template.CompartmentID = defaultString(defaultString(stringFromMap(context, "compartmentId"), stringFromMap(raw, "compartmentId")), template.CompartmentID)
+	template.AvailabilityAD = defaultString(defaultString(stringFromMap(context, "availabilityAd"), stringFromMap(raw, "availabilityAd")), template.AvailabilityAD)
+	template.ImageID = defaultString(defaultString(stringFromMap(compute, "imageId"), stringFromMap(raw, "imageId")), template.ImageID)
+	template.ImageName = defaultString(defaultString(stringFromMap(compute, "imageName"), stringFromMap(raw, "imageName")), template.ImageName)
+	template.Shape = defaultString(defaultString(stringFromMap(compute, "shape"), stringFromMap(raw, "shape")), template.Shape)
+	template.OCPUs = defaultInt(defaultInt(intFromMap(compute, "ocpus"), intFromMap(raw, "ocpus")), template.OCPUs)
+	template.MemoryGB = defaultInt(defaultInt(intFromMap(compute, "memoryGb"), intFromMap(raw, "memoryGb")), template.MemoryGB)
+	template.BootVolumeGB = defaultInt(defaultInt(intFromMap(compute, "bootVolumeGb"), intFromMap(raw, "bootVolumeGb")), template.BootVolumeGB)
+	template.BootVolumeVPUsPerGB = defaultInt(defaultInt(intFromMap(compute, "bootVolumeVpusPerGb"), intFromMap(raw, "bootVolumeVpusPerGb")), template.BootVolumeVPUsPerGB)
+	template.VCNID = defaultString(defaultString(stringFromMap(network, "vcnId"), stringFromMap(raw, "vcnId")), template.VCNID)
+	template.SubnetID = defaultString(defaultString(stringFromMap(network, "subnetId"), stringFromMap(raw, "subnetId")), template.SubnetID)
 	if value, ok := boolValueFromMaps(network, raw, "assignPublicIp"); ok {
 		template.AssignPublicIP = value
 	}
 	if value, ok := boolValueFromMaps(network, raw, "enableIpv6"); ok {
 		template.EnableIPv6 = value
 	}
-	template.ReservedPublicIP = defaultString(stringFromMap(network, "reservedPublicIp"), stringFromMap(raw, "reservedPublicIp"))
-	template.SSHKey = defaultString(stringFromMap(network, "sshKey"), stringFromMap(raw, "sshKey"))
-	template.CloudInit = defaultString(stringFromMap(network, "cloudInit"), stringFromMap(raw, "cloudInit"))
+	template.ReservedPublicIP = defaultString(defaultString(stringFromMap(network, "reservedPublicIp"), stringFromMap(raw, "reservedPublicIp")), template.ReservedPublicIP)
+	template.SSHKey = defaultString(defaultString(stringFromMap(network, "sshKey"), stringFromMap(raw, "sshKey")), template.SSHKey)
+	template.CloudInit = defaultString(defaultString(stringFromMap(network, "cloudInit"), stringFromMap(raw, "cloudInit")), template.CloudInit)
 	if len(tags) > 0 {
 		template.Tags = stringMapFromAny(tags)
 	}

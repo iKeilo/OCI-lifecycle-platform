@@ -360,6 +360,42 @@ func TestCreateInstanceTaskUsesTemplateDefaultInstanceName(t *testing.T) {
 	}
 }
 
+func TestCreateTemplatePartialConfigPreservesPayloadFields(t *testing.T) {
+	s := NewSeeded()
+	template, err := s.CreateTemplate(domain.CreateTemplateRequest{
+		Name:                "partial-config",
+		ProfileID:           "profile-default",
+		Region:              "ap-chuncheon-1",
+		Compartment:         "root",
+		CompartmentID:       "ocid1.tenancy.oc1..partial",
+		AvailabilityAD:      "AD-1",
+		ImageID:             "ocid1.image.oc1..partial",
+		ImageName:           "Oracle Linux",
+		Shape:               "VM.Standard.E3.Flex",
+		OCPUs:               1,
+		MemoryGB:            1,
+		BootVolumeGB:        50,
+		BootVolumeVPUsPerGB: 10,
+		VCNID:               "ocid1.vcn.oc1..partial",
+		SubnetID:            "ocid1.subnet.oc1..partial",
+		AssignPublicIP:      true,
+		ConfigFormat:        "json",
+		ConfigText:          `{"instance":{"name":"partial-instance"}}`,
+	}, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if template.ProfileID != "profile-default" || template.Region != "ap-chuncheon-1" || template.ImageID == "" {
+		t.Fatalf("expected partial config to preserve request context, got %#v", template)
+	}
+	if template.OCPUs != 1 || template.MemoryGB != 1 || template.BootVolumeGB != 50 || template.BootVolumeVPUsPerGB != 10 {
+		t.Fatalf("expected partial config to preserve compute fields, got %#v", template)
+	}
+	if template.VCNID == "" || template.SubnetID == "" || !template.AssignPublicIP {
+		t.Fatalf("expected partial config to preserve network fields, got %#v", template)
+	}
+}
+
 func TestCreateOCIInstanceLaunchTaskPersistsRetryPolicy(t *testing.T) {
 	s := NewSeeded()
 	job, err := s.CreateOCIInstanceLaunchTask(domain.CreateInstanceRequest{

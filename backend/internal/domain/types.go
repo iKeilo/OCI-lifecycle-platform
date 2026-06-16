@@ -289,25 +289,30 @@ type BootVolumeUsage struct {
 }
 
 type LaunchOptions struct {
-	Verified        bool               `json:"verified"`
-	ProfileID       string             `json:"profileId,omitempty"`
-	Region          string             `json:"region,omitempty"`
-	CompartmentID   string             `json:"compartmentId,omitempty"`
-	RequestIDs      []string           `json:"requestIds,omitempty"`
-	ErrorCode       string             `json:"errorCode,omitempty"`
-	ErrorMessage    string             `json:"errorMessage,omitempty"`
-	LastSyncedAt    time.Time          `json:"lastSyncedAt,omitempty"`
-	Profiles        []Profile          `json:"profiles"`
-	Templates       []InstanceTemplate `json:"templates"`
-	Regions         []LaunchOption     `json:"regions"`
-	Compartments    []LaunchOption     `json:"compartments"`
-	AvailabilityADs []LaunchOption     `json:"availabilityAds"`
-	Images          []LaunchOption     `json:"images"`
-	Shapes          []ShapeOption      `json:"shapes"`
-	VCNs            []LaunchOption     `json:"vcns"`
-	Subnets         []LaunchOption     `json:"subnets"`
-	ReservedIPs     []LaunchOption     `json:"reservedIps"`
-	BootVolumeUsage BootVolumeUsage    `json:"bootVolumeUsage"`
+	Verified         bool                      `json:"verified"`
+	ProfileID        string                    `json:"profileId,omitempty"`
+	Region           string                    `json:"region,omitempty"`
+	CompartmentID    string                    `json:"compartmentId,omitempty"`
+	CacheState       string                    `json:"cacheState,omitempty"`
+	CacheCheckedAt   time.Time                 `json:"cacheCheckedAt,omitempty"`
+	CacheChangedAt   time.Time                 `json:"cacheChangedAt,omitempty"`
+	ShapeFingerprint string                    `json:"shapeFingerprint,omitempty"`
+	RequestIDs       []string                  `json:"requestIds,omitempty"`
+	ErrorCode        string                    `json:"errorCode,omitempty"`
+	ErrorMessage     string                    `json:"errorMessage,omitempty"`
+	LastSyncedAt     time.Time                 `json:"lastSyncedAt,omitempty"`
+	Profiles         []Profile                 `json:"profiles"`
+	Templates        []InstanceTemplate        `json:"templates"`
+	Regions          []LaunchOption            `json:"regions"`
+	Compartments     []LaunchOption            `json:"compartments"`
+	AvailabilityADs  []LaunchOption            `json:"availabilityAds"`
+	Images           []LaunchOption            `json:"images"`
+	Shapes           []ShapeOption             `json:"shapes"`
+	ShapeImages      map[string][]LaunchOption `json:"shapeImages"`
+	VCNs             []LaunchOption            `json:"vcns"`
+	Subnets          []LaunchOption            `json:"subnets"`
+	ReservedIPs      []LaunchOption            `json:"reservedIps"`
+	BootVolumeUsage  BootVolumeUsage           `json:"bootVolumeUsage"`
 }
 
 type InstanceLifecycleAction string

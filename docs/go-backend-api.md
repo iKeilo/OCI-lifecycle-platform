@@ -143,14 +143,15 @@ compartmentId
 availabilityDomain
 vcnId
 shape
+cacheMode
 ```
 
 OCI 模式真实调用：
 - Identity `ListRegionSubscriptions`
 - Identity `ListCompartments`
 - Identity `ListAvailabilityDomains`
-- Compute `ListImages`
 - Compute `ListShapes`
+- Compute `ListImages`，按 Shape 绑定缓存兼容镜像。
 - VirtualNetwork `ListVcns`
 - VirtualNetwork `ListSubnets`
 - VirtualNetwork `ListPublicIps`
@@ -158,11 +159,39 @@ OCI 模式真实调用：
 
 Shape / Image 联动要求：
 
-- `shape` 查询参数必须传给 Compute `ListImages`，只返回目标 Shape 兼容镜像。
-- Web 创建实例页在 Shape、AD、Compartment 改变时必须重新请求 `/api/launch-options`。
-- 如果当前 `imageId` 不在刷新后的 Image 列表中，前端必须清空或替换为兼容镜像。
+- 后端维护 Shape/Image 选项目录缓存。首次同一 Profile/Region/Compartment/AD 会为所有 Shape 预取兼容 Image。
+- `shapeImages` 返回 `shapeName -> Image[]` 映射；每个 Image 列表都来自带 `shape` 参数的 Compute `ListImages`。
+- `images` 字段保留兼容旧前端，只返回当前 `shape` 对应的 Image 列表。
+- Web 创建实例页和模板页切换 Shape 时必须优先使用 `shapeImages[shape]`，不再实时请求 `/api/launch-options?shape=...`。
+- Web 创建实例页在 Profile、Region、Compartment、AD 改变时重新请求 `/api/launch-options`，用于探查 Shape 更新并加载对应目录。
+- 如果当前 `imageId` 不在当前 Shape 的绑定 Image 列表中，前端必须清空或替换为该 Shape 的第一个兼容镜像。
 - 手动输入 Image OCID 时必须提示“未验证兼容性”，提交前由后端执行预检查。
-- 刷新失败时返回真实 OCI 错误，不允许用旧 Image 列表继续提交。
+- 刷新失败时返回真实 OCI 错误；如果存在旧缓存，页面可以继续展示旧缓存，但必须显示缓存状态和错误。
+
+缓存相关返回字段：
+
+```json
+{
+  "cacheState": "HIT",
+  "cacheCheckedAt": "2026-06-16T12:00:00Z",
+  "cacheChangedAt": "2026-06-16T12:00:00Z",
+  "shapeFingerprint": "sha256...",
+  "shapeImages": {
+    "VM.Standard.E3.Flex": [
+      { "id": "ocid1.image...", "label": "Oracle-Linux..." }
+    ]
+  }
+}
+```
+
+`cacheState` 常见值：
+
+- `INITIALIZING`：首次发现 Shape 后，后台正在预热 Shape/Image 绑定；前端应提示等待并禁用重复刷新。
+- `READY`：首次目录构建完成。
+- `HIT`：Shape fingerprint 未变化，复用已缓存 Image 绑定。
+- `REFRESHED`：Shape fingerprint 变化，已刷新目录。
+- `PARTIAL`：部分 Shape 的 Image 绑定成功，部分失败。
+- `STALE`：刷新失败但存在旧缓存。
 
 Subnet 选项会返回：
 ```json

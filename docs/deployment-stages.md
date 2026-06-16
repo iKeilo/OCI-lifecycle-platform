@@ -259,6 +259,24 @@ npm run build
 - `POST /api/templates/{id}/validate` 只做本地字段完整性检查，不做真实 OCI 兼容性验证。
 - 真实 OCI 检查仍发生在提交创建实例任务之后，由既有 OCI executor 执行。
 
+## 2026-06-16 Shape/Image 选项目录缓存增量更新
+
+已新增落地：
+
+- `/api/launch-options` 返回 `shapeImages`，即 `Shape -> 兼容 Image 列表` 的绑定映射。
+- OCI 模式下首次同一 Profile / Region / Compartment / AD 会先用真实 OCI API 获取 Shape，然后登记 `INITIALIZING` 状态并在后台为每个 Shape 调用带 `shape` 参数的 `ListImages` 预存兼容镜像。
+- 后续同上下文请求会先探查 Shape fingerprint；若 Shape 未变化且后台预热完成，则复用上次缓存的 Image 绑定，不再为每次切换 Shape 重新请求 Image。
+- 创建实例页切换 Shape 改为本地读取 `shapeImages[shape]`，立即切换 Image 下拉。
+- 模板新建/编辑页切换 Shape 同样改为本地读取 `shapeImages[shape]`，模板仍只保存预输入，不创建 OCI 资源。
+- 镜像与规格区域显示选项目录状态：缓存状态、上次探查时间、Shape 数量和绑定 Image 数量。
+- 创建实例页和模板页在 `INITIALIZING` 状态显示“正在初始化 Shape/Image 选项目录，所需时间较长”的提示，并禁用手动刷新按钮；页面会每 15 秒自动检查一次完成状态，避免用户反复刷新造成重复 OCI API 调用。
+
+边界校准：
+
+- 当前为进程内缓存，容器重启后需要重新预热；后续可按 `docs/launch-options-cache-implementation.md` 下沉到 PostgreSQL/file store。
+- Shape/Image 缓存只代表“已发现的兼容选项”，不代表容量、配额或权限一定可用。
+- 最终创建实例任务仍需要真实 OCI executor 做提交前校验。
+
 仍需后续增强：
 
 - 模板详情页、版本化和使用历史。
