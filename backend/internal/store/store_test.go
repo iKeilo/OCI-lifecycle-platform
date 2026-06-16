@@ -7,10 +7,15 @@ import (
 )
 
 type fakeSink struct {
-	profiles  []domain.Profile
-	jobs      []domain.Job
-	instances []domain.Instance
-	audits    []domain.AuditLog
+	profiles           []domain.Profile
+	jobs               []domain.Job
+	instances          []domain.Instance
+	audits             []domain.AuditLog
+	emailSettings      domain.EmailSettings
+	webhookSettings    domain.WebhookSettings
+	accountSettings    domain.AccountSettings
+	appearanceSettings domain.AppearanceSettings
+	budgetSettings     domain.BudgetSettings
 }
 
 func (s *fakeSink) SaveProfile(profile domain.Profile, secret domain.ProfileSecret) error {
@@ -31,6 +36,51 @@ func (s *fakeSink) SaveInstance(instance domain.Instance) error {
 func (s *fakeSink) RecordAudit(entry domain.AuditLog) error {
 	s.audits = append(s.audits, entry)
 	return nil
+}
+
+func (s *fakeSink) SaveEmailSettings(settings domain.EmailSettings) error {
+	s.emailSettings = settings
+	return nil
+}
+
+func (s *fakeSink) GetEmailSettings() (domain.EmailSettings, error) {
+	return s.emailSettings, nil
+}
+
+func (s *fakeSink) SaveWebhookSettings(settings domain.WebhookSettings) error {
+	s.webhookSettings = settings
+	return nil
+}
+
+func (s *fakeSink) GetWebhookSettings() (domain.WebhookSettings, error) {
+	return s.webhookSettings, nil
+}
+
+func (s *fakeSink) SaveAccountSettings(settings domain.AccountSettings) error {
+	s.accountSettings = settings
+	return nil
+}
+
+func (s *fakeSink) GetAccountSettings() (domain.AccountSettings, error) {
+	return s.accountSettings, nil
+}
+
+func (s *fakeSink) SaveAppearanceSettings(settings domain.AppearanceSettings) error {
+	s.appearanceSettings = settings
+	return nil
+}
+
+func (s *fakeSink) GetAppearanceSettings() (domain.AppearanceSettings, error) {
+	return s.appearanceSettings, nil
+}
+
+func (s *fakeSink) SaveBudgetSettings(settings domain.BudgetSettings) error {
+	s.budgetSettings = settings
+	return nil
+}
+
+func (s *fakeSink) GetBudgetSettings() (domain.BudgetSettings, error) {
+	return s.budgetSettings, nil
 }
 
 func TestCompleteStopJobUpdatesInstanceStatus(t *testing.T) {
@@ -538,5 +588,45 @@ func TestCreateProfilePersistsWithoutReturningSecret(t *testing.T) {
 	}
 	if len(sink.profiles) != 1 || sink.profiles[0].ID != profile.ID {
 		t.Fatalf("expected profile persistence, got %#v", sink.profiles)
+	}
+}
+
+func TestLoadPersistedSettingsRestoresEmailForSend(t *testing.T) {
+	sink := &fakeSink{}
+	s := New()
+	s.SetPersistenceSink(sink)
+	saved, err := s.SetEmailSettings(domain.EmailSettings{
+		Enabled:  true,
+		Host:     "mail.example.com",
+		Port:     465,
+		Username: "panel@example.com",
+		Password: "smtp-secret",
+		From:     "panel@example.com",
+		To:       []string{"ops@example.com"},
+		UseTLS:   true,
+		StartTLS: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Password != "" || !saved.PasswordSet {
+		t.Fatalf("expected redacted saved settings with password marker, got %#v", saved)
+	}
+
+	reloaded := New()
+	reloaded.SetPersistenceSink(sink)
+	if err := reloaded.LoadPersistedSettings(); err != nil {
+		t.Fatal(err)
+	}
+	forSend := reloaded.GetEmailSettingsForSend()
+	if !forSend.Enabled || forSend.Host != "mail.example.com" || forSend.Port != 465 || !forSend.UseTLS || forSend.StartTLS {
+		t.Fatalf("expected persisted SMTP settings to load, got %#v", forSend)
+	}
+	if forSend.Password != "smtp-secret" || !forSend.PasswordSet {
+		t.Fatalf("expected persisted SMTP password to be available for delivery without exposing it in API, got %#v", forSend)
+	}
+	forAPI := reloaded.GetEmailSettings()
+	if forAPI.Password != "" || !forAPI.PasswordSet {
+		t.Fatalf("expected API settings to remain redacted, got %#v", forAPI)
 	}
 }

@@ -130,6 +130,10 @@ func main() {
 		}
 		appStore.ReplaceTemplates(templates)
 		appStore.SetPersistenceSink(persistence)
+		if err := appStore.LoadPersistedSettings(); err != nil {
+			slog.Error("file settings load failed", "error", err)
+			os.Exit(1)
+		}
 		if len(profiles) == 0 {
 			if profile := envProfile(cfg); profile.ID != "" {
 				appStore.ReplaceProfiles([]domain.Profile{profile})

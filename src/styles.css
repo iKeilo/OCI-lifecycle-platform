@@ -1224,6 +1224,23 @@ kbd {
   flex: 1;
 }
 
+.instance-filter-controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.plain-switch-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #4b211e;
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .inline-search {
   display: flex;
   align-items: center;
@@ -3352,6 +3369,12 @@ td {
   .segmented-control {
     width: 100%;
     overflow-x: auto;
+    justify-content: flex-start;
+  }
+
+  .instance-filter-controls {
+    width: 100%;
+    flex-wrap: wrap;
     justify-content: flex-start;
   }
 

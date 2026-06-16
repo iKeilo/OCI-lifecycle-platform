@@ -7,12 +7,12 @@ import {
   MoreVertical,
   Plus,
   Power,
+  PowerOff,
   RefreshCw,
   Search,
   Server,
   ShieldAlert,
   Square,
-  Terminal,
   Trash2,
   X,
   Zap
@@ -55,13 +55,19 @@ function isTerminalStatus(status: Instance["status"]) {
 
 export function InstancesPage() {
   const [statusFilter, setStatusFilter] = useState<"All" | Instance["status"]>("All");
+  const [hideTerminated, setHideTerminated] = useState(false);
   const [instances, setInstances] = useState<Instance[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
   const [actionMessage, setActionMessage] = useState("");
   const [actionError, setActionError] = useState("");
   const [selectedIpInstance, setSelectedIpInstance] = useState<Instance | null>(null);
-  const [pendingAction, setPendingAction] = useState<{ instance: Instance; action: InstanceActionPayload["action"] } | null>(null);
+  const [pendingAction, setPendingAction] = useState<{
+    instance: Instance;
+    action: InstanceActionPayload["action"];
+    label?: string;
+    overrides?: Partial<InstanceActionPayload>;
+  } | null>(null);
   const [resizeInstance, setResizeInstance] = useState<Instance | null>(null);
 
   const reloadInstances = useCallback(async () => {
@@ -83,9 +89,10 @@ export function InstancesPage() {
   }, [reloadInstances]);
 
   const filteredInstances = useMemo(() => {
-    if (statusFilter === "All") return instances;
-    return instances.filter((instance) => instance.status === statusFilter);
-  }, [instances, statusFilter]);
+    const visibleInstances = hideTerminated ? instances.filter((instance) => instance.status !== "Terminated") : instances;
+    if (statusFilter === "All") return visibleInstances;
+    return visibleInstances.filter((instance) => instance.status === statusFilter);
+  }, [hideTerminated, instances, statusFilter]);
 
   async function submitAction(instance: Instance, action: InstanceActionPayload["action"], overrides: Partial<InstanceActionPayload> = {}) {
     setActionMessage("");
@@ -106,9 +113,11 @@ export function InstancesPage() {
         ...overrides
       });
       setActionMessage(`已创建任务 ${job.id}，可在任务中心查看执行状态。`);
-      await reloadInstances();
+      void reloadInstances();
+      return true;
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "创建实例操作任务失败");
+      return false;
     }
   }
 
@@ -136,7 +145,7 @@ export function InstancesPage() {
         snapshotBefore: true
       });
       setActionMessage(`已创建一键 IPv6 任务 ${job.id}，可在任务中心查看执行状态。`);
-      await reloadInstances();
+      void reloadInstances();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "创建一键 IPv6 任务失败");
     }
@@ -160,16 +169,28 @@ export function InstancesPage() {
       {actionError ? <div className="inline-error">{actionError}</div> : null}
 
       <section className="toolbar glass-panel">
-        <div className="segmented-control">
-          {statusFilters.map((status) => (
+        <div className="instance-filter-controls">
+          <div className="segmented-control">
+            {statusFilters.map((status) => (
+              <button
+                className={statusFilter === status.value ? "active" : ""}
+                key={status.value}
+                onClick={() => setStatusFilter(status.value)}
+              >
+                {status.label}
+              </button>
+            ))}
+          </div>
+          <label className="plain-switch-control">
+            <span>隐藏已终止机器</span>
             <button
-              className={statusFilter === status.value ? "active" : ""}
-              key={status.value}
-              onClick={() => setStatusFilter(status.value)}
-            >
-              {status.label}
-            </button>
-          ))}
+              type="button"
+              className={`toggle-switch ${hideTerminated ? "on" : ""}`}
+              aria-label="隐藏已终止机器"
+              aria-pressed={hideTerminated}
+              onClick={() => setHideTerminated((value) => !value)}
+            />
+          </label>
         </div>
         <div className="toolbar-actions">
           <div className="inline-search">
@@ -224,17 +245,13 @@ export function InstancesPage() {
               <div className="instance-card-footer">
                 <StatusPill status={instance.status} />
                 <div className="instance-actions">
-                  <button className="secondary-button">
-                    <Terminal size={16} />
-                    SSH
+                  <button className="secondary-button" onClick={() => void submitOneClickIPv6(instance)} disabled={isTerminalStatus(instance.status)}>
+                    <Globe2 size={16} />
+                    一键 IPv6
                   </button>
                   <button className="secondary-button" onClick={() => setSelectedIpInstance(instance)} disabled={isTerminalStatus(instance.status)}>
                     <Globe2 size={16} />
                     IP 管理
-                  </button>
-                  <button className="secondary-button" onClick={() => void submitOneClickIPv6(instance)} disabled={isTerminalStatus(instance.status)}>
-                    <Globe2 size={16} />
-                    一键 IPv6
                   </button>
                   {instance.status === "Stopped" ? (
                     <button className="secondary-button" onClick={() => setPendingAction({ instance, action: "START" })}>
@@ -242,11 +259,15 @@ export function InstancesPage() {
                       启动
                     </button>
                   ) : (
-                    <button className="secondary-button" onClick={() => setPendingAction({ instance, action: "STOP" })} disabled={instance.status !== "Running"}>
+                    <button className="secondary-button" onClick={() => setPendingAction({ instance, action: "STOP", label: "停止", overrides: { graceful: false } })} disabled={instance.status !== "Running"}>
                       <Square size={16} />
                       停止
                     </button>
                   )}
+                  <button className="secondary-button" onClick={() => setPendingAction({ instance, action: "STOP", label: "关机", overrides: { graceful: true } })} disabled={instance.status !== "Running"}>
+                    <PowerOff size={16} />
+                    关机
+                  </button>
                   <button className="secondary-button" onClick={() => setPendingAction({ instance, action: "REBOOT" })} disabled={instance.status !== "Running"}>
                     <Power size={16} />
                     重启
@@ -270,7 +291,11 @@ export function InstancesPage() {
         <IpManagementModal
           instance={selectedIpInstance}
           onClose={() => setSelectedIpInstance(null)}
-          onCreated={reloadInstances}
+          onCreated={(jobId) => {
+            setActionMessage(`已创建 IP 管理任务 ${jobId}，可在任务中心查看执行状态。`);
+            setSelectedIpInstance(null);
+            void reloadInstances();
+          }}
         />
       ) : null}
 
@@ -278,10 +303,17 @@ export function InstancesPage() {
         <ConfirmActionModal
           instance={pendingAction.instance}
           action={pendingAction.action}
+          label={pendingAction.label}
           onClose={() => setPendingAction(null)}
           onConfirm={async (preserveBootVolume) => {
-            await submitAction(pendingAction.instance, pendingAction.action, { preserveBootVolume });
-            setPendingAction(null);
+            const succeeded = await submitAction(pendingAction.instance, pendingAction.action, {
+              ...pendingAction.overrides,
+              preserveBootVolume
+            });
+            if (succeeded) {
+              setPendingAction(null);
+            }
+            return succeeded;
           }}
         />
       ) : null}
@@ -292,8 +324,11 @@ export function InstancesPage() {
           instances={instances}
           onClose={() => setResizeInstance(null)}
           onSubmit={async (payload) => {
-            await submitAction(resizeInstance, "RESIZE", payload);
-            setResizeInstance(null);
+            const succeeded = await submitAction(resizeInstance, "RESIZE", payload);
+            if (succeeded) {
+              setResizeInstance(null);
+            }
+            return succeeded;
           }}
         />
       ) : null}
@@ -304,17 +339,29 @@ export function InstancesPage() {
 function ConfirmActionModal({
   instance,
   action,
+  label: labelOverride,
   onClose,
   onConfirm
 }: {
   instance: Instance;
   action: InstanceActionPayload["action"];
+  label?: string;
   onClose: () => void;
-  onConfirm: (preserveBootVolume: boolean) => Promise<void>;
+  onConfirm: (preserveBootVolume: boolean) => Promise<boolean>;
 }) {
   const [preserveBootVolume, setPreserveBootVolume] = useState(true);
-  const label = actionLabel(action);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const label = labelOverride || actionLabel(action);
   const isDanger = action === "TERMINATE";
+
+  async function handleConfirm() {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    const succeeded = await onConfirm(preserveBootVolume);
+    if (!succeeded) {
+      setIsSubmitting(false);
+    }
+  }
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
@@ -333,10 +380,10 @@ function ConfirmActionModal({
             <button className={`toggle-switch ${preserveBootVolume ? "on" : ""}`} onClick={() => setPreserveBootVolume((value) => !value)} />
           </div>
         ) : null}
-        <button className="primary-button full" onClick={() => void onConfirm(preserveBootVolume)}>
-          确认{label}
+        <button className="primary-button full" disabled={isSubmitting} onClick={() => void handleConfirm()}>
+          {isSubmitting ? "提交中..." : `确认${label}`}
         </button>
-        <button className="secondary-button full" onClick={onClose}>取消</button>
+        <button className="secondary-button full" disabled={isSubmitting} onClick={onClose}>取消</button>
       </div>
     </div>
   );
@@ -351,7 +398,7 @@ function ResizeModal({
   instance: Instance;
   instances: Instance[];
   onClose: () => void;
-  onSubmit: (payload: Partial<InstanceActionPayload>) => Promise<void>;
+  onSubmit: (payload: Partial<InstanceActionPayload>) => Promise<boolean>;
 }) {
   const currentBootVolumeGb = Math.max(50, Number(instance.bootVolumeGb) || 0);
   const currentBootVolumeVpusPerGb = normalizeBootVolumeVpus(Number(instance.bootVolumeVpusPerGb) || 10);
@@ -362,6 +409,7 @@ function ResizeModal({
   const [targetBootVolumeVpusPerGb, setTargetBootVolumeVpusPerGb] = useState(currentBootVolumeVpusPerGb);
   const [snapshotBefore, setSnapshotBefore] = useState(true);
   const [validationError, setValidationError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const targetIsFlexible = isFlexibleShapeName(targetShape);
   const bootVolumeTooSmall = targetBootVolumeGb < currentBootVolumeGb;
   const expandBootVolume = targetBootVolumeGb > currentBootVolumeGb;
@@ -373,7 +421,8 @@ function ResizeModal({
     targetBootVolumeVpusPerGb
   });
 
-  function submitResize() {
+  async function submitResize() {
+    if (isSubmitting) return;
     if (bootVolumeTooSmall) {
       setValidationError(`目标启动盘不能小于当前大小 ${currentBootVolumeGb} GB。OCI 启动盘只能扩容，不能降盘。`);
       return;
@@ -383,7 +432,8 @@ function ResizeModal({
       return;
     }
     setValidationError("");
-    void onSubmit({
+    setIsSubmitting(true);
+    const succeeded = await onSubmit({
       targetShape,
       targetOcpus: targetIsFlexible ? targetOcpus : Math.max(1, Number(instance.ocpus) || 1),
       targetMemoryGb: targetIsFlexible ? targetMemoryGb : Math.max(1, Number(instance.memoryGb) || 1),
@@ -392,6 +442,9 @@ function ResizeModal({
       expandBootVolume,
       snapshotBefore
     });
+    if (!succeeded) {
+      setIsSubmitting(false);
+    }
   }
 
   return (
@@ -498,13 +551,13 @@ function ResizeModal({
           <span>OCI 实例升降级可能触发重启。提交后会创建任务，由后端执行并验证状态。</span>
         </div>
         <div className="button-row">
-          <button className="secondary-button" onClick={onClose}>取消</button>
+          <button className="secondary-button" disabled={isSubmitting} onClick={onClose}>取消</button>
           <button
             className="primary-button"
-            disabled={bootVolumeTooSmall}
-            onClick={submitResize}
+            disabled={bootVolumeTooSmall || isSubmitting}
+            onClick={() => void submitResize()}
           >
-            创建升降级任务
+            {isSubmitting ? "提交中..." : "创建升降级任务"}
           </button>
         </div>
       </div>
@@ -554,7 +607,7 @@ function IpManagementModal({
 }: {
   instance: Instance;
   onClose: () => void;
-  onCreated: () => Promise<void>;
+  onCreated: (jobId: string) => void;
 }) {
   const existingIPv6Addresses = instanceIPv6Addresses(instance);
   const hasIPv6 = existingIPv6Addresses.length > 0;
@@ -574,13 +627,12 @@ function IpManagementModal({
   const [openHttpsIpv6, setOpenHttpsIpv6] = useState(false);
   const [snapshotBefore, setSnapshotBefore] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [resultMessage, setResultMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const disablingIPv6 = hasIPv6 && !enableIPv6;
 
   async function handleCreateTask() {
+    if (isSubmitting) return;
     setIsSubmitting(true);
-    setResultMessage("");
     setErrorMessage("");
     try {
       const job = await createIPTask(instance.id, {
@@ -603,11 +655,9 @@ function IpManagementModal({
         openHttpsIpv6,
         snapshotBefore
       });
-      setResultMessage(`已创建 IP 管理任务 ${job.id}`);
-      void onCreated();
+      onCreated(job.id);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "创建 IP 管理任务失败");
-    } finally {
       setIsSubmitting(false);
     }
   }
@@ -809,11 +859,10 @@ function IpManagementModal({
           <ShieldAlert size={18} />
           <span>释放公网 IP 或更换保留 IP 会影响 SSH、业务访问和 DNS 解析。</span>
         </div>
-        {resultMessage ? <div className="inline-success">{resultMessage}</div> : null}
         {errorMessage ? <div className="inline-error">{errorMessage}</div> : null}
 
         <div className="button-row">
-          <button className="secondary-button" onClick={onClose}>取消</button>
+          <button className="secondary-button" disabled={isSubmitting} onClick={onClose}>取消</button>
           <button className="primary-button" disabled={isSubmitting} onClick={handleCreateTask}>
             {isSubmitting ? "创建中..." : disablingIPv6 ? "创建关闭 IPv6 任务" : "创建 IP 任务"}
           </button>

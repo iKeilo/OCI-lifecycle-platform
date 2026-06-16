@@ -113,7 +113,6 @@ function AutomationTaskModal({
     approvalRequired: true
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [resultMessage, setResultMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
 
   function updateField<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
@@ -121,16 +120,15 @@ function AutomationTaskModal({
   }
 
   async function handleCreateTask() {
+    if (isSubmitting) return;
     setIsSubmitting(true);
-    setResultMessage("");
     setErrorMessage("");
     try {
-      const result = await createAutomationTask(form);
-      setResultMessage(`已添加自动化任务：${result.rule.name}，关联任务 ${result.job.id}`);
+      await createAutomationTask(form);
+      onClose();
       void onCreated();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "添加自动化任务失败");
-    } finally {
       setIsSubmitting(false);
     }
   }
@@ -303,11 +301,10 @@ function AutomationTaskModal({
             />
           </div>
         </div>
-        {resultMessage ? <div className="inline-success">{resultMessage}</div> : null}
         {errorMessage ? <div className="inline-error">{errorMessage}</div> : null}
 
         <div className="button-row">
-          <button className="secondary-button" onClick={onClose}>
+          <button className="secondary-button" disabled={isSubmitting} onClick={onClose}>
             取消
           </button>
           <button className="primary-button" disabled={isSubmitting} onClick={handleCreateTask}>

@@ -657,17 +657,23 @@ function isFixedShapeRange(min?: number, max?: number) {
 }
 
 function clampShapeValue(value: number, min?: number, max?: number) {
+  const maxOpenEndedValue = 4096;
   const safeValue = Number.isFinite(value) ? value : min || 1;
   const safeMin = Number.isFinite(min) && Number(min) > 0 ? Number(min) : 1;
   const safeMax = Number.isFinite(max) && Number(max) > 0 ? Number(max) : undefined;
   if (safeMax !== undefined && safeMin === safeMax) return safeMin;
-  return Math.min(Math.max(safeValue, safeMin), safeMax ?? Number.MAX_SAFE_INTEGER);
+  return Math.min(Math.max(safeValue, safeMin), safeMax ?? maxOpenEndedValue);
 }
 
 function boundedIntegerOptions(min: number | undefined, max: number | undefined, current: number) {
-  const safeCurrent = Number.isFinite(current) && current > 0 ? Math.floor(current) : 1;
-  const safeMin = Number.isFinite(min) && Number(min) > 0 ? Math.floor(Number(min)) : safeCurrent;
-  const safeMax = Number.isFinite(max) && Number(max) > 0 ? Math.floor(Number(max)) : safeCurrent;
+  const maxGeneratedValue = 4096;
+  const normalizeOptionValue = (value: number | undefined, fallback: number) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 && numeric <= maxGeneratedValue ? Math.floor(numeric) : fallback;
+  };
+  const safeCurrent = normalizeOptionValue(current, 1);
+  const safeMin = normalizeOptionValue(min, safeCurrent);
+  const safeMax = normalizeOptionValue(max, safeCurrent);
   const lower = Math.min(safeMin, safeMax, safeCurrent);
   const upper = Math.max(safeMin, safeMax, safeCurrent);
   if (upper - lower > 1024) return Array.from(new Set([safeMin, safeCurrent])).sort((a, b) => a - b);
