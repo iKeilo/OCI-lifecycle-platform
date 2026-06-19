@@ -7,6 +7,9 @@ services:
         GO_PROXY: ${GO_PROXY:-}
     image: ${OCI_LIFECYCLE_IMAGE:-oci-lifecycle-platform:local}
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "${WEB_PORT:-18080}:8080"
     environment:
@@ -17,7 +20,7 @@ services:
       PANEL_PASSWORD_HASH: ${PANEL_PASSWORD_HASH:-}
       PANEL_SESSION_SECRET: ${PANEL_SESSION_SECRET:-}
       PROFILE_KEY_ENCRYPTION_KEY: ${PROFILE_KEY_ENCRYPTION_KEY:-}
-      DATABASE_URL: ${DATABASE_URL:-}
+      DATABASE_URL: ${DATABASE_URL:-postgres://oci_lifecycle:${POSTGRES_PASSWORD:-change-me-before-production}@postgres:5432/${POSTGRES_DB:-oci_lifecycle}?sslmode=disable}
       OCI_TENANCY_OCID: ${OCI_TENANCY_OCID:-}
       OCI_USER_OCID: ${OCI_USER_OCID:-}
       OCI_FINGERPRINT: ${OCI_FINGERPRINT:-}
@@ -48,7 +51,6 @@ services:
       start_period: 20s
 
   postgres:
-    profiles: ["postgres"]
     image: postgres:16-alpine
     restart: unless-stopped
     environment:

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"a-series-oracle/backend/internal/auth"
@@ -502,6 +503,66 @@ func TestCreateOCIInstanceActionUsesOCIDResource(t *testing.T) {
 	}
 }
 
+func TestCreateOCIInstanceReinstallCreatesJob(t *testing.T) {
+	queued := ""
+	st := store.NewSeeded()
+	server := NewServerWithOptions(st, ServerOptions{
+		ExecutionMode: "oci",
+		Enqueue: func(jobID string) {
+			queued = jobID
+		},
+		OCIReadiness: oci.ReadinessConfig{
+			ExecutionMode: "oci",
+			TenancyOCID:   "ocid1.tenancy.oc1..example",
+			Region:        "ap-chuncheon-1",
+		},
+	}).Handler()
+	instanceID := "ocid1.instance.oc1.ap-chuncheon-1.example"
+	res := postJSON(t, server, "/api/instances/"+instanceID+"/system/reinstall", map[string]any{
+		"imageId":                "ocid1.image.oc1.ap-chuncheon-1.example",
+		"imageName":              "Oracle-Linux-9",
+		"bootVolumeSizeGb":       50,
+		"bootVolumeVpusPerGb":    10,
+		"preserveOldBootVolume":  true,
+		"createBootVolumeBackup": false,
+		"generateRootPassword":   false,
+		"notifyPasswordInApp":    false,
+		"notifyPasswordByEmail":  false,
+		"sshAuthorizedKey":       "",
+		"cloudInit":              "",
+		"confirmationName":       "",
+		"note":                   "api-test",
+	})
+
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", res.Code, res.Body.String())
+	}
+	var body struct {
+		ID         string         `json:"id"`
+		Type       string         `json:"type"`
+		ResourceID string         `json:"resourceId"`
+		Input      map[string]any `json:"input"`
+	}
+	decodeTestJSON(t, res.Body.Bytes(), &body)
+	if body.Type != "重装系统" || body.ResourceID != instanceID || body.Input["operation"] != "reinstall" {
+		t.Fatalf("unexpected reinstall job: %#v", body)
+	}
+	if queued != body.ID {
+		t.Fatalf("expected reinstall job to be enqueued, queued=%s body=%s", queued, body.ID)
+	}
+	notifications := st.ListNotifications(false)
+	if len(notifications) != 1 {
+		t.Fatalf("expected reinstall creation notification, got %#v", notifications)
+	}
+	notice := notifications[0]
+	if notice.Title != "重装系统任务已创建: "+instanceID || notice.Category != "instance-system" || !notice.EmailRequested {
+		t.Fatalf("unexpected reinstall notification: %#v", notice)
+	}
+	if !strings.Contains(notice.Message, "SSH 密码: 未生成 / 未变更") || !strings.Contains(notice.Message, "操作: 重装系统") {
+		t.Fatalf("expected SSH and operation details in notification, got %s", notice.Message)
+	}
+}
+
 func TestOCIModeCreateIPTaskCreatesIPv6Job(t *testing.T) {
 	queued := ""
 	server := NewServerWithOptions(store.NewSeeded(), ServerOptions{
@@ -633,6 +694,7 @@ func TestRootTenancyCreateInstanceGeneratesSensitiveNotification(t *testing.T) {
 	var notifications struct {
 		UnreadCount int `json:"unreadCount"`
 		Items       []struct {
+			ID             string `json:"id"`
 			Title          string `json:"title"`
 			Category       string `json:"category"`
 			Sensitive      bool   `json:"sensitive"`
@@ -651,6 +713,27 @@ func TestRootTenancyCreateInstanceGeneratesSensitiveNotification(t *testing.T) {
 	}
 	if notice.EmailSent || notice.EmailError == "" {
 		t.Fatalf("email should be recorded as not sent when SMTP is disabled: %#v", notice)
+	}
+
+	deleteRes := httptest.NewRecorder()
+	server.ServeHTTP(deleteRes, httptest.NewRequest(http.MethodDelete, "/api/notifications/"+notice.ID, nil))
+	if deleteRes.Code != http.StatusNoContent {
+		t.Fatalf("expected delete notification 204, got %d body=%s", deleteRes.Code, deleteRes.Body.String())
+	}
+	listAfterDelete := httptest.NewRecorder()
+	server.ServeHTTP(listAfterDelete, httptest.NewRequest(http.MethodGet, "/api/notifications?unread=true", nil))
+	if listAfterDelete.Code != http.StatusOK {
+		t.Fatalf("expected notification list 200 after delete, got %d body=%s", listAfterDelete.Code, listAfterDelete.Body.String())
+	}
+	var afterDelete struct {
+		UnreadCount int `json:"unreadCount"`
+		Items       []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	decodeTestJSON(t, listAfterDelete.Body.Bytes(), &afterDelete)
+	if afterDelete.UnreadCount != 0 || len(afterDelete.Items) != 0 {
+		t.Fatalf("expected deleted notification to disappear, got %#v", afterDelete)
 	}
 }
 
@@ -725,6 +808,86 @@ func TestGetJob(t *testing.T) {
 	decodeTestJSON(t, res.Body.Bytes(), &body)
 	if body.ID != "JOB-1042" || body.Status != "SUCCESS" {
 		t.Fatalf("unexpected job detail: %#v", body)
+	}
+}
+
+func TestClearCompletedJobs(t *testing.T) {
+	ts := newTestServer()
+	res := postJSON(t, ts, "/api/jobs/clear-completed", map[string]any{})
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", res.Code, res.Body.String())
+	}
+	var body struct {
+		DeletedCount int `json:"deletedCount"`
+		Items        []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"items"`
+	}
+	decodeTestJSON(t, res.Body.Bytes(), &body)
+	if body.DeletedCount != 2 {
+		t.Fatalf("expected two seeded completed jobs to be cleared, got %#v", body)
+	}
+	for _, job := range body.Items {
+		if job.ID == "JOB-1042" || job.ID == "JOB-1040" {
+			t.Fatalf("completed job remained after cleanup: %#v", body.Items)
+		}
+	}
+	if len(body.Items) != 1 || body.Items[0].ID != "JOB-1041" || body.Items[0].Status != "WAITING_OCI" {
+		t.Fatalf("expected waiting OCI job to remain, got %#v", body.Items)
+	}
+}
+
+func TestGuardrailsBlockOversizedLaunch(t *testing.T) {
+	appStore := store.NewSeeded()
+	if _, err := appStore.SetSecurityGuardrailSettings(domain.SecurityGuardrailSettings{
+		Enabled:                 true,
+		MaxOCPUsPerInstance:     1,
+		MaxMemoryGBPerInstance:  2,
+		MaxBootVolumeGB:         50,
+		MaxRetryAttempts:        3,
+		MaxPublicIPBatchCount:   2,
+		BlockBootVolumeDeletion: true,
+	}, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	ts := NewServer(appStore).Handler()
+	res := postJSON(t, ts, "/api/instances", map[string]any{
+		"name":         "too-large",
+		"shape":        "VM.Standard.E3.Flex",
+		"ocpus":        4,
+		"memoryGb":     16,
+		"bootVolumeGb": 50,
+	})
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("expected oversized launch to be blocked, got %d body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestGuardrailsBlockTerminateDeletingBootVolume(t *testing.T) {
+	appStore := store.NewSeeded()
+	if _, err := appStore.SetSecurityGuardrailSettings(domain.SecurityGuardrailSettings{
+		Enabled:                       true,
+		MaxOCPUsPerInstance:           8,
+		MaxMemoryGBPerInstance:        32,
+		MaxBootVolumeGB:               200,
+		MaxRetryAttempts:              10,
+		MaxPublicIPBatchCount:         10,
+		RequireApprovalForTerminate:   true,
+		BlockBootVolumeDeletion:       true,
+		BlockRootPasswordWithoutEmail: true,
+	}, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	ts := NewServer(appStore).Handler()
+	res := postJSON(t, ts, "/api/instances/inst-prod-web-01/actions", map[string]any{
+		"action":             "TERMINATE",
+		"preserveBootVolume": false,
+		"snapshotBefore":     true,
+	})
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("expected terminate delete boot volume to be blocked, got %d body=%s", res.Code, res.Body.String())
 	}
 }
 

@@ -1,24 +1,27 @@
-import { Eye, RefreshCw, RotateCcw, XCircle } from "lucide-react";
+import { Eye, RefreshCw, RotateCcw, Trash2, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AsyncState } from "../components/AsyncState";
 import { PageHeader } from "../components/PageHeader";
 import { StatusPill } from "../components/StatusPill";
-import { cancelJob, getJob, listJobs, retryJob } from "../services/api";
+import { cancelJob, clearCompletedJobs, getJob, listJobs, retryJob } from "../services/api";
 import type { Job } from "../services/api";
 
 const activeStatuses = new Set(["PENDING", "RETRYING", "RUNNING", "WAITING_OCI", "VERIFYING"]);
 const retryableStatuses = new Set(["FAILED", "CANCELLED", "ROLLBACK_REQUIRED", "MANUAL_REQUIRED"]);
+const completedStatuses = new Set(["SUCCESS", "FAILED", "CANCELLED", "ROLLBACK_REQUIRED", "MANUAL_REQUIRED"]);
 
 export function JobsPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [actionMessage, setActionMessage] = useState("");
   const [actionError, setActionError] = useState("");
 
   const hasActiveJobs = useMemo(() => jobs.some((job) => activeStatuses.has(job.status)), [jobs]);
+  const completedCount = useMemo(() => jobs.filter((job) => completedStatuses.has(job.status)).length, [jobs]);
 
   async function loadJobs({ silent = false } = {}) {
     if (silent) {
@@ -90,6 +93,28 @@ export function JobsPage() {
     }
   }
 
+  async function handleClearCompleted() {
+    if (completedCount === 0) return;
+    const confirmed = window.confirm(`确定清除 ${completedCount} 个已完成/已结束任务吗？运行中和等待中的任务会保留。`);
+    if (!confirmed) return;
+    setActionError("");
+    setActionMessage("");
+    setIsClearing(true);
+    try {
+      const result = await clearCompletedJobs();
+      setJobs(result.items);
+      setSelectedJob((current) => {
+        if (!current) return null;
+        return result.items.find((job) => job.id === current.id) ?? null;
+      });
+      setActionMessage(`已清除 ${result.deletedCount} 个已完成任务`);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "清除已完成任务失败");
+    } finally {
+      setIsClearing(false);
+    }
+  }
+
   return (
     <div className="page-stack">
       <PageHeader
@@ -97,10 +122,16 @@ export function JobsPage() {
         title="任务中心"
         description="所有 OCI 变更操作都会作为任务追踪，并关联 Request ID、Work Request ID、参数、结果、重试和审计记录。"
         actions={
-          <button className="secondary-button" onClick={() => void loadJobs({ silent: true })} disabled={isRefreshing}>
-            <RefreshCw size={16} className={isRefreshing ? "spin" : undefined} />
-            刷新
-          </button>
+          <div className="table-action-row">
+            <button className="secondary-button danger" onClick={() => void handleClearCompleted()} disabled={isClearing || completedCount === 0}>
+              <Trash2 size={16} />
+              清除已完成任务{completedCount > 0 ? ` (${completedCount})` : ""}
+            </button>
+            <button className="secondary-button" onClick={() => void loadJobs({ silent: true })} disabled={isRefreshing}>
+              <RefreshCw size={16} className={isRefreshing ? "spin" : undefined} />
+              刷新
+            </button>
+          </div>
         }
       />
 

@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"a-series-oracle/backend/internal/domain"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var (
@@ -39,6 +41,8 @@ type Store struct {
 	accountSettings    domain.AccountSettings
 	appearanceSettings domain.AppearanceSettings
 	budgetSettings     domain.BudgetSettings
+	accessSettings     domain.AccessControlSettings
+	guardrailSettings  domain.SecurityGuardrailSettings
 }
 
 type PersistenceSink interface {
@@ -46,6 +50,10 @@ type PersistenceSink interface {
 	SaveJob(job domain.Job) error
 	SaveInstance(instance domain.Instance) error
 	RecordAudit(entry domain.AuditLog) error
+}
+
+type jobDeleteSink interface {
+	DeleteJobs(jobIDs []string) error
 }
 
 type profileSecretReader interface {
@@ -66,6 +74,8 @@ type settingsSink interface {
 	SaveAccountSettings(settings domain.AccountSettings) error
 	SaveAppearanceSettings(settings domain.AppearanceSettings) error
 	SaveBudgetSettings(settings domain.BudgetSettings) error
+	SaveAccessControlSettings(settings domain.AccessControlSettings) error
+	SaveSecurityGuardrailSettings(settings domain.SecurityGuardrailSettings) error
 }
 
 type settingsReader interface {
@@ -74,6 +84,17 @@ type settingsReader interface {
 	GetAccountSettings() (domain.AccountSettings, error)
 	GetAppearanceSettings() (domain.AppearanceSettings, error)
 	GetBudgetSettings() (domain.BudgetSettings, error)
+	GetAccessControlSettings() (domain.AccessControlSettings, error)
+	GetSecurityGuardrailSettings() (domain.SecurityGuardrailSettings, error)
+}
+
+type notificationSink interface {
+	SaveNotification(notification domain.Notification) error
+	DeleteNotification(notificationID string) error
+}
+
+type notificationReader interface {
+	ListNotifications() ([]domain.Notification, error)
 }
 
 type templateSink interface {
@@ -123,6 +144,8 @@ func New() *Store {
 			DowngradePreset:  "free-first",
 			RequireApproval:  true,
 		},
+		accessSettings:    defaultAccessControlSettings(time.Now().UTC()),
+		guardrailSettings: defaultSecurityGuardrails(time.Now().UTC()),
 	}
 }
 
@@ -339,6 +362,28 @@ func (s *Store) ReplaceAuditLogs(entries []domain.AuditLog) {
 	s.nextAudit = maxID + 1
 	if s.nextAudit < 1 {
 		s.nextAudit = 1
+	}
+}
+
+func (s *Store) ReplaceNotifications(notifications []domain.Notification) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	next := make(map[string]domain.Notification, len(notifications))
+	maxID := 0
+	for _, notification := range notifications {
+		if strings.TrimSpace(notification.ID) == "" {
+			continue
+		}
+		next[notification.ID] = notification
+		if suffix := numericIDSuffix(notification.ID, "notice-"); suffix > maxID {
+			maxID = suffix
+		}
+	}
+	s.notifications = next
+	s.nextNotice = maxID + 1
+	if s.nextNotice < 1 {
+		s.nextNotice = 1
 	}
 }
 
@@ -744,6 +789,43 @@ func (s *Store) ListJobs() []domain.Job {
 	return jobs
 }
 
+func (s *Store) ClearCompletedJobs(actor string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	jobIDs := make([]string, 0)
+	for id, job := range s.jobs {
+		if isCompletedJobStatus(job.Status) {
+			jobIDs = append(jobIDs, id)
+		}
+	}
+	if len(jobIDs) == 0 {
+		return 0, nil
+	}
+	sort.Strings(jobIDs)
+	if sink, ok := s.sink.(jobDeleteSink); ok {
+		if err := sink.DeleteJobs(jobIDs); err != nil {
+			return 0, err
+		}
+	}
+	for _, id := range jobIDs {
+		delete(s.jobs, id)
+	}
+	_ = s.recordAuditLocked(domain.AuditLog{
+		Actor:        defaultString(actor, "system"),
+		Action:       "jobs.clear_completed",
+		ResourceType: "job",
+		RequestPayload: map[string]any{
+			"jobIds": jobIDs,
+			"count":  len(jobIDs),
+		},
+		ResultPayload: map[string]any{
+			"deletedCount": len(jobIDs),
+		},
+	})
+	return len(jobIDs), nil
+}
+
 func (s *Store) ListAuditLogs(filter domain.AuditLogFilter) ([]domain.AuditLog, error) {
 	s.mu.RLock()
 	reader, useReader := s.sink.(auditLogReader)
@@ -802,6 +884,11 @@ func (s *Store) CreateNotification(req domain.NotificationRequest, actor string)
 		CreatedAt:      now,
 	}
 	s.notifications[notification.ID] = notification
+	if sink, ok := s.sink.(notificationSink); ok {
+		if err := sink.SaveNotification(notification); err != nil {
+			return domain.Notification{}, err
+		}
+	}
 	return notification, nil
 }
 
@@ -818,6 +905,11 @@ func (s *Store) UpdateNotificationEmailStatus(id string, sent bool, message stri
 		notification.EmailError = strings.TrimSpace(message)
 	}
 	s.notifications[id] = notification
+	if sink, ok := s.sink.(notificationSink); ok {
+		if err := sink.SaveNotification(notification); err != nil {
+			return domain.Notification{}, err
+		}
+	}
 	return notification, nil
 }
 
@@ -834,6 +926,11 @@ func (s *Store) UpdateNotificationWebhookStatus(id string, sent bool, message st
 		notification.WebhookError = strings.TrimSpace(message)
 	}
 	s.notifications[id] = notification
+	if sink, ok := s.sink.(notificationSink); ok {
+		if err := sink.SaveNotification(notification); err != nil {
+			return domain.Notification{}, err
+		}
+	}
 	return notification, nil
 }
 
@@ -849,6 +946,11 @@ func (s *Store) MarkNotificationRead(id string) (domain.Notification, error) {
 		notification.Read = true
 		notification.ReadAt = &now
 		s.notifications[id] = notification
+		if sink, ok := s.sink.(notificationSink); ok {
+			if err := sink.SaveNotification(notification); err != nil {
+				return domain.Notification{}, err
+			}
+		}
 	}
 	return notification, nil
 }
@@ -863,11 +965,33 @@ func (s *Store) MarkAllNotificationsRead() []domain.Notification {
 			notification.Read = true
 			notification.ReadAt = &now
 			s.notifications[id] = notification
+			if sink, ok := s.sink.(notificationSink); ok {
+				_ = sink.SaveNotification(notification)
+			}
 		}
 		items = append(items, notification)
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
 	return items
+}
+
+func (s *Store) DeleteNotification(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.notifications[id]; !ok {
+		return ErrNotFound
+	}
+	delete(s.notifications, id)
+	if sink, ok := s.sink.(notificationSink); ok {
+		if err := sink.DeleteNotification(id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) GetEmailSettings() domain.EmailSettings {
@@ -1080,6 +1204,191 @@ func (s *Store) SetBudgetSettings(settings domain.BudgetSettings) (domain.Budget
 	return s.budgetSettings, nil
 }
 
+func (s *Store) GetAccessControlSettings() domain.AccessControlSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return redactAccessSettings(normalizeAccessControlSettings(s.accessSettings, s.now().UTC()))
+}
+
+func (s *Store) SetAccessControlSettings(settings domain.AccessControlSettings, actor string) (domain.AccessControlSettings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	currentPasswords := map[string]string{}
+	for _, user := range s.accessSettings.Users {
+		currentPasswords[user.ID] = user.PasswordHash
+	}
+	next := normalizeAccessControlSettings(settings, s.now().UTC())
+	for index := range next.Users {
+		if strings.TrimSpace(next.Users[index].PasswordHash) == "" {
+			next.Users[index].PasswordHash = currentPasswords[next.Users[index].ID]
+		}
+		next.Users[index].PasswordSet = strings.TrimSpace(next.Users[index].PasswordHash) != ""
+	}
+	next.UpdatedAt = s.now().UTC()
+	s.accessSettings = next
+	if sink, ok := s.sink.(settingsSink); ok {
+		if err := sink.SaveAccessControlSettings(s.accessSettings); err != nil {
+			return domain.AccessControlSettings{}, err
+		}
+	}
+	_ = s.recordAuditLocked(domain.AuditLog{
+		Actor:        defaultString(actor, "admin"),
+		Action:       "settings.access.updated",
+		ResourceType: "settings",
+		ResourceID:   "access",
+		RequestPayload: map[string]any{
+			"enabled": next.Enabled,
+			"users":   len(next.Users),
+		},
+		CreatedAt: s.now().UTC(),
+	})
+	return redactAccessSettings(s.accessSettings), nil
+}
+
+func (s *Store) SetAccessUserPassword(userID, password, actor string) (domain.AccessControlSettings, error) {
+	userID = sanitizeIdentifier(userID)
+	if userID == "" {
+		return domain.AccessControlSettings{}, fmt.Errorf("%w: userId is required", ErrValidation)
+	}
+	password = strings.TrimSpace(password)
+	if len(password) < 8 {
+		return domain.AccessControlSettings{}, fmt.Errorf("%w: password must be at least 8 characters", ErrValidation)
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return domain.AccessControlSettings{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := normalizeAccessControlSettings(s.accessSettings, s.now().UTC())
+	found := false
+	for index := range next.Users {
+		if next.Users[index].ID == userID {
+			next.Users[index].PasswordHash = string(hash)
+			next.Users[index].PasswordSet = true
+			next.Users[index].UpdatedAt = s.now().UTC()
+			found = true
+			break
+		}
+	}
+	if !found {
+		return domain.AccessControlSettings{}, ErrNotFound
+	}
+	next.UpdatedAt = s.now().UTC()
+	s.accessSettings = next
+	if sink, ok := s.sink.(settingsSink); ok {
+		if err := sink.SaveAccessControlSettings(s.accessSettings); err != nil {
+			return domain.AccessControlSettings{}, err
+		}
+	}
+	_ = s.recordAuditLocked(domain.AuditLog{
+		Actor:        defaultString(actor, "admin"),
+		Action:       "access.user.password.updated",
+		ResourceType: "user",
+		ResourceID:   userID,
+		CreatedAt:    s.now().UTC(),
+	})
+	return redactAccessSettings(s.accessSettings), nil
+}
+
+func (s *Store) VerifyAccessUser(userID, password string) (domain.AccessUser, bool) {
+	userID = sanitizeIdentifier(userID)
+	if userID == "" {
+		return domain.AccessUser{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	settings := normalizeAccessControlSettings(s.accessSettings, s.now().UTC())
+	for index, user := range settings.Users {
+		if user.ID != userID || !strings.EqualFold(user.Status, "active") || strings.TrimSpace(user.PasswordHash) == "" {
+			continue
+		}
+		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
+			return domain.AccessUser{}, false
+		}
+		now := s.now().UTC()
+		settings.Users[index].LastLoginAt = now
+		settings.Users[index].PasswordSet = true
+		s.accessSettings = settings
+		if sink, ok := s.sink.(settingsSink); ok {
+			_ = sink.SaveAccessControlSettings(s.accessSettings)
+		}
+		return redactAccessUser(settings.Users[index]), true
+	}
+	return domain.AccessUser{}, false
+}
+
+func (s *Store) GetAccessUser(userID string) (domain.AccessUser, bool) {
+	userID = sanitizeIdentifier(userID)
+	if userID == "" {
+		userID = "admin"
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	settings := normalizeAccessControlSettings(s.accessSettings, s.now().UTC())
+	for _, user := range settings.Users {
+		if user.ID == userID {
+			return redactAccessUser(user), true
+		}
+	}
+	return domain.AccessUser{}, false
+}
+
+func (s *Store) Authorize(userID, permission, profileID, region, compartmentID string) error {
+	settings := s.GetAccessControlSettings()
+	if !settings.Enabled {
+		return nil
+	}
+	user, ok := s.GetAccessUser(userID)
+	if !ok || !strings.EqualFold(user.Status, "active") {
+		return fmt.Errorf("%w: user is disabled or not found", ErrConflict)
+	}
+	role := accessRoleByID(settings.Roles, user.RoleID)
+	if role.ID == "" || !permissionAllowed(role.Permissions, permission) {
+		return fmt.Errorf("%w: permission %s denied", ErrConflict, permission)
+	}
+	if !scopeAllowed(user.AllowedProfiles, profileID) || !scopeAllowed(user.AllowedRegions, region) || !scopeAllowed(user.AllowedCompartments, compartmentID) {
+		return fmt.Errorf("%w: resource scope denied", ErrConflict)
+	}
+	return nil
+}
+
+func (s *Store) GetSecurityGuardrailSettings() domain.SecurityGuardrailSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return normalizeSecurityGuardrails(s.guardrailSettings, s.now().UTC())
+}
+
+func (s *Store) SetSecurityGuardrailSettings(settings domain.SecurityGuardrailSettings, actor string) (domain.SecurityGuardrailSettings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := normalizeSecurityGuardrails(settings, s.now().UTC())
+	next.UpdatedAt = s.now().UTC()
+	s.guardrailSettings = next
+	if sink, ok := s.sink.(settingsSink); ok {
+		if err := sink.SaveSecurityGuardrailSettings(s.guardrailSettings); err != nil {
+			return domain.SecurityGuardrailSettings{}, err
+		}
+	}
+	_ = s.recordAuditLocked(domain.AuditLog{
+		Actor:        defaultString(actor, "admin"),
+		Action:       "settings.guardrails.updated",
+		ResourceType: "settings",
+		ResourceID:   "guardrails",
+		RequestPayload: map[string]any{
+			"enabled":                     next.Enabled,
+			"maxOcpusPerInstance":         next.MaxOCPUsPerInstance,
+			"maxMemoryGbPerInstance":      next.MaxMemoryGBPerInstance,
+			"maxBootVolumeGb":             next.MaxBootVolumeGB,
+			"maxPublicIpBatchCount":       next.MaxPublicIPBatchCount,
+			"blockPublicIpv6RouteChanges": next.BlockPublicIPv6RouteChanges,
+		},
+		CreatedAt: s.now().UTC(),
+	})
+	return s.guardrailSettings, nil
+}
+
 func (s *Store) LoadPersistedSettings() error {
 	s.mu.RLock()
 	reader, ok := s.sink.(settingsReader)
@@ -1107,6 +1416,14 @@ func (s *Store) LoadPersistedSettings() error {
 	if err != nil {
 		return err
 	}
+	accessSettings, err := reader.GetAccessControlSettings()
+	if err != nil {
+		return err
+	}
+	guardrailSettings, err := reader.GetSecurityGuardrailSettings()
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	if emailSettings.Host != "" || emailSettings.Enabled || emailSettings.PasswordSet {
 		s.emailSettings = emailSettings
@@ -1122,6 +1439,12 @@ func (s *Store) LoadPersistedSettings() error {
 	}
 	if budgetSettings.MonthlyBudgetUSD > 0 || budgetSettings.Enabled || budgetSettings.ScopeMode != "" {
 		s.budgetSettings = normalizeBudgetSettings(budgetSettings, s.now())
+	}
+	if len(accessSettings.Users) > 0 || len(accessSettings.Roles) > 0 {
+		s.accessSettings = normalizeAccessControlSettings(accessSettings, s.now().UTC())
+	}
+	if guardrailSettings.MaxOCPUsPerInstance > 0 || guardrailSettings.Enabled || len(guardrailSettings.AllowedRegions) > 0 || len(guardrailSettings.DeniedRegions) > 0 {
+		s.guardrailSettings = normalizeSecurityGuardrails(guardrailSettings, s.now().UTC())
 	}
 	s.mu.Unlock()
 	return nil
@@ -1220,6 +1543,24 @@ func (s *Store) CompleteJob(id string, result map[string]any) (domain.Job, error
 		} else if operation == "ip-management" {
 			if instance, ok := s.instances[job.ResourceID]; ok {
 				instance.LastSyncedAt = now
+				if err := s.saveInstanceLocked(instance); err != nil {
+					return domain.Job{}, err
+				}
+			}
+		} else if operation == "reinstall" {
+			if instance, ok := s.instances[job.ResourceID]; ok {
+				instance.LastSyncedAt = now
+				instance.Status = statusFromOCIState(stringFromMap(result, "finalState"), instance.Status)
+				if bootVolumeGB := intFromMap(result, "targetBootVolumeGb"); bootVolumeGB > 0 {
+					instance.BootVolumeGB = bootVolumeGB
+				} else if bootVolumeGB := intFromMap(job.Input, "bootVolumeSizeGb"); bootVolumeGB > 0 {
+					instance.BootVolumeGB = bootVolumeGB
+				}
+				if vpus := intFromMap(result, "targetBootVolumeVpusPerGb"); vpus > 0 {
+					instance.BootVolumeVPUsPerGB = vpus
+				} else if vpus := intFromMap(job.Input, "bootVolumeVpusPerGb"); vpus > 0 {
+					instance.BootVolumeVPUsPerGB = vpus
+				}
 				if err := s.saveInstanceLocked(instance); err != nil {
 					return domain.Job{}, err
 				}
@@ -1725,6 +2066,89 @@ func (s *Store) CreateOCIInstanceActionTask(instanceID string, req domain.Instan
 	return s.saveJobLocked(job)
 }
 
+func (s *Store) CreateOCIInstanceReinstallTask(instanceID string, req domain.InstanceReinstallRequest, actor, profileID, region, compartmentID string) (domain.Job, error) {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return domain.Job{}, fmt.Errorf("%w: instance OCID is required", ErrValidation)
+	}
+	if !strings.HasPrefix(instanceID, "ocid1.instance.") {
+		return domain.Job{}, fmt.Errorf("%w: instance id must be an OCI instance OCID", ErrValidation)
+	}
+	if strings.TrimSpace(req.ImageID) == "" {
+		return domain.Job{}, fmt.Errorf("%w: imageId is required", ErrValidation)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(req.ImageID), "ocid1.image.") {
+		return domain.Job{}, fmt.Errorf("%w: imageId must be an OCI image OCID", ErrValidation)
+	}
+	if req.BootVolumeSizeGB > 0 && req.BootVolumeSizeGB < 50 {
+		return domain.Job{}, fmt.Errorf("%w: bootVolumeSizeGb must be at least 50", ErrValidation)
+	}
+	if req.BootVolumeVPUsPerGB != 0 && !validBootVolumeVPUs(req.BootVolumeVPUsPerGB) {
+		return domain.Job{}, fmt.Errorf("%w: bootVolumeVpusPerGb must be between 10 and 120", ErrValidation)
+	}
+	if req.GenerateRootPassword || strings.TrimSpace(req.CloudInit) != "" || strings.TrimSpace(req.SSHAuthorizedKey) != "" {
+		return domain.Job{}, fmt.Errorf("%w: root password, cloud-init and SSH key injection are not supported by OCI UpdateInstance reinstall because instance user_data and ssh_authorized_keys metadata cannot be changed after launch", ErrValidation)
+	}
+	if req.CreateBootVolumeBackup {
+		return domain.Job{}, fmt.Errorf("%w: boot volume backup before reinstall is not implemented yet", ErrValidation)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if instance, ok := s.instances[instanceID]; ok {
+		if instance.Status == domain.InstanceTerminated || instance.Status == domain.InstanceTerminating {
+			return domain.Job{}, fmt.Errorf("%w: terminated instance cannot be reinstalled", ErrConflict)
+		}
+		if strings.TrimSpace(req.ConfirmationName) != "" && strings.TrimSpace(req.ConfirmationName) != strings.TrimSpace(instance.Name) {
+			return domain.Job{}, fmt.Errorf("%w: confirmationName must match instance name", ErrValidation)
+		}
+		if req.BootVolumeSizeGB > 0 && instance.BootVolumeGB > 0 && req.BootVolumeSizeGB < instance.BootVolumeGB {
+			return domain.Job{}, fmt.Errorf("%w: boot volume cannot be decreased", ErrValidation)
+		}
+		if strings.TrimSpace(profileID) == "" {
+			profileID = instance.ProfileID
+		}
+		if strings.TrimSpace(region) == "" {
+			region = instance.Region
+		}
+		if strings.TrimSpace(compartmentID) == "" {
+			compartmentID = instance.CompartmentID
+		}
+	}
+
+	job := s.newJobLocked("重装系统", "instance", instanceID, actor)
+	profileID = defaultString(profileID, "DEFAULT")
+	if profile, ok := s.profileByIDOrNameLocked(profileID); ok {
+		profileID = profile.ID
+		if strings.TrimSpace(region) == "" {
+			region = profile.DefaultRegion
+		}
+	}
+	job.ProfileID = profileID
+	job.Region = strings.TrimSpace(region)
+	job.CompartmentID = strings.TrimSpace(compartmentID)
+	job.MaxRetries = 0
+	job.Input = map[string]any{
+		"operation":              "reinstall",
+		"ociInstanceId":          instanceID,
+		"imageId":                strings.TrimSpace(req.ImageID),
+		"imageName":              strings.TrimSpace(req.ImageName),
+		"bootVolumeSizeGb":       req.BootVolumeSizeGB,
+		"bootVolumeVpusPerGb":    req.BootVolumeVPUsPerGB,
+		"preserveOldBootVolume":  req.PreserveOldBootVolume,
+		"createBootVolumeBackup": false,
+		"generateRootPassword":   false,
+		"notifyPasswordInApp":    false,
+		"notifyPasswordByEmail":  false,
+		"confirmationName":       strings.TrimSpace(req.ConfirmationName),
+		"note":                   strings.TrimSpace(req.Note),
+		"cloudInitSensitive":     false,
+		"executionMode":          "oci",
+	}
+	return s.saveJobLocked(job)
+}
+
 func (s *Store) CreateInstanceTask(req domain.CreateInstanceRequest, actor string) (domain.CreateInstanceResponse, error) {
 	req, template, err := s.applyTemplateToCreateRequest(req)
 	if err != nil {
@@ -2119,6 +2543,14 @@ func isCancelableStatus(status domain.JobStatus) bool {
 
 func isRetryableStatus(status domain.JobStatus) bool {
 	return status == domain.JobFailed || status == domain.JobCancelled || status == domain.JobManualNeeded || status == domain.JobRollbackNeeded
+}
+
+func isCompletedJobStatus(status domain.JobStatus) bool {
+	return status == domain.JobSuccess ||
+		status == domain.JobFailed ||
+		status == domain.JobCancelled ||
+		status == domain.JobRollbackNeeded ||
+		status == domain.JobManualNeeded
 }
 
 func instanceActionJobType(action domain.InstanceLifecycleAction) string {
@@ -2950,7 +3382,11 @@ func filterAuditLogs(entries []domain.AuditLog, filter domain.AuditLogFilter) []
 			!auditMatches(entry.Action, filter.Action) ||
 			!auditMatches(entry.ResourceType, filter.ResourceType) ||
 			!auditMatches(entry.ResourceID, filter.ResourceID) ||
-			!auditMatches(entry.ProfileID, filter.ProfileID) {
+			!auditMatches(entry.ProfileID, filter.ProfileID) ||
+			!auditMatches(entry.Region, filter.Region) ||
+			!auditMatches(entry.CompartmentID, filter.CompartmentID) ||
+			!auditMatches(entry.OCIRequestID, filter.OCIRequestID) ||
+			!auditMatches(entry.OCIWorkRequestID, filter.OCIWorkRequestID) {
 			continue
 		}
 		if status == "failed" && entry.ErrorCode == "" && entry.ErrorMessage == "" {
@@ -3079,6 +3515,19 @@ func (s *Store) nextAuditIDLocked() int64 {
 	id := s.nextAudit
 	s.nextAudit++
 	return id
+}
+
+func numericIDSuffix(id string, prefix string) int {
+	id = strings.TrimSpace(id)
+	prefix = strings.TrimSpace(prefix)
+	if prefix != "" && !strings.HasPrefix(id, prefix) {
+		return 0
+	}
+	value, err := strconv.Atoi(strings.TrimPrefix(id, prefix))
+	if err != nil || value < 0 {
+		return 0
+	}
+	return value
 }
 
 func redactEmailSettings(settings domain.EmailSettings) domain.EmailSettings {
@@ -3211,6 +3660,166 @@ func cleanStringList(values []string) []string {
 		}
 	}
 	return out
+}
+
+func defaultAccessControlSettings(now time.Time) domain.AccessControlSettings {
+	return domain.AccessControlSettings{
+		Enabled:   true,
+		Roles:     defaultAccessRoles(),
+		Users:     []domain.AccessUser{{ID: "admin", DisplayName: "Administrator", RoleID: "super_admin", Status: "active", UpdatedAt: now}},
+		UpdatedAt: now,
+	}
+}
+
+func defaultAccessRoles() []domain.AccessRole {
+	return []domain.AccessRole{
+		{ID: "super_admin", Name: "超级管理员", Description: "拥有平台全部权限，可管理密钥、用户、护栏和所有 OCI 操作。", Permissions: []string{"*"}, System: true},
+		{ID: "ops_admin", Name: "运维管理员", Description: "可管理实例、网络、模板、任务和自动化，但不能修改用户权限。", Permissions: []string{"profile:read", "instance:*", "network:*", "template:*", "job:*", "automation:*", "notification:*", "audit:read", "budget:read", "guardrail:read"}, System: true},
+		{ID: "operator", Name: "普通操作员", Description: "可查看资源并执行启动、停止、重启、任务查看等低风险操作。", Permissions: []string{"profile:read", "instance:read", "instance:operate", "job:read", "notification:read"}, System: true},
+		{ID: "auditor", Name: "审计员", Description: "只读访问任务、通知和审计日志。", Permissions: []string{"job:read", "notification:read", "audit:read", "guardrail:read"}, System: true},
+	}
+}
+
+func defaultSecurityGuardrails(now time.Time) domain.SecurityGuardrailSettings {
+	return domain.SecurityGuardrailSettings{
+		Enabled:                       true,
+		MaxOCPUsPerInstance:           4,
+		MaxMemoryGBPerInstance:        24,
+		MaxBootVolumeGB:               200,
+		MaxRetryAttempts:              20,
+		MaxPublicIPBatchCount:         10,
+		RequireApprovalForTerminate:   true,
+		BlockBootVolumeDeletion:       true,
+		BlockPublicIPv6RouteChanges:   false,
+		BlockRootPasswordWithoutEmail: true,
+		RequireTemplateForLaunch:      false,
+		UpdatedAt:                     now,
+	}
+}
+
+func normalizeAccessControlSettings(settings domain.AccessControlSettings, now time.Time) domain.AccessControlSettings {
+	if len(settings.Roles) == 0 {
+		settings.Roles = defaultAccessRoles()
+	}
+	if len(settings.Users) == 0 {
+		settings.Users = defaultAccessControlSettings(now.UTC()).Users
+	}
+	settings.Enabled = true
+	for index := range settings.Users {
+		settings.Users[index].ID = sanitizeIdentifier(settings.Users[index].ID)
+		if settings.Users[index].ID == "" {
+			settings.Users[index].ID = fmt.Sprintf("user-%d", index+1)
+		}
+		settings.Users[index].DisplayName = strings.TrimSpace(settings.Users[index].DisplayName)
+		if settings.Users[index].DisplayName == "" {
+			settings.Users[index].DisplayName = settings.Users[index].ID
+		}
+		settings.Users[index].Email = strings.TrimSpace(settings.Users[index].Email)
+		settings.Users[index].RoleID = sanitizeIdentifier(defaultString(settings.Users[index].RoleID, "operator"))
+		settings.Users[index].Status = strings.ToLower(strings.TrimSpace(defaultString(settings.Users[index].Status, "active")))
+		if settings.Users[index].Status != "active" && settings.Users[index].Status != "disabled" {
+			settings.Users[index].Status = "active"
+		}
+		settings.Users[index].AllowedProfiles = cleanStringList(settings.Users[index].AllowedProfiles)
+		settings.Users[index].AllowedRegions = cleanStringList(settings.Users[index].AllowedRegions)
+		settings.Users[index].AllowedCompartments = cleanStringList(settings.Users[index].AllowedCompartments)
+		settings.Users[index].PasswordSet = strings.TrimSpace(settings.Users[index].PasswordHash) != ""
+		if settings.Users[index].UpdatedAt.IsZero() {
+			settings.Users[index].UpdatedAt = now.UTC()
+		}
+	}
+	if settings.UpdatedAt.IsZero() {
+		settings.UpdatedAt = now.UTC()
+	}
+	return settings
+}
+
+func normalizeSecurityGuardrails(settings domain.SecurityGuardrailSettings, now time.Time) domain.SecurityGuardrailSettings {
+	defaults := defaultSecurityGuardrails(now.UTC())
+	if settings.MaxOCPUsPerInstance <= 0 {
+		settings.MaxOCPUsPerInstance = defaults.MaxOCPUsPerInstance
+	}
+	if settings.MaxMemoryGBPerInstance <= 0 {
+		settings.MaxMemoryGBPerInstance = defaults.MaxMemoryGBPerInstance
+	}
+	if settings.MaxBootVolumeGB <= 0 {
+		settings.MaxBootVolumeGB = defaults.MaxBootVolumeGB
+	}
+	if settings.MaxRetryAttempts <= 0 {
+		settings.MaxRetryAttempts = defaults.MaxRetryAttempts
+	}
+	if settings.MaxPublicIPBatchCount <= 0 {
+		settings.MaxPublicIPBatchCount = defaults.MaxPublicIPBatchCount
+	}
+	settings.AllowedRegions = cleanStringList(settings.AllowedRegions)
+	settings.DeniedRegions = cleanStringList(settings.DeniedRegions)
+	if settings.UpdatedAt.IsZero() {
+		settings.UpdatedAt = now.UTC()
+	}
+	return settings
+}
+
+func redactAccessSettings(settings domain.AccessControlSettings) domain.AccessControlSettings {
+	for index := range settings.Users {
+		settings.Users[index] = redactAccessUser(settings.Users[index])
+	}
+	return settings
+}
+
+func redactAccessUser(user domain.AccessUser) domain.AccessUser {
+	user.PasswordSet = strings.TrimSpace(user.PasswordHash) != ""
+	user.PasswordHash = ""
+	return user
+}
+
+func accessRoleByID(roles []domain.AccessRole, roleID string) domain.AccessRole {
+	for _, role := range roles {
+		if role.ID == roleID {
+			return role
+		}
+	}
+	return domain.AccessRole{}
+}
+
+func permissionAllowed(permissions []string, permission string) bool {
+	permission = strings.TrimSpace(permission)
+	for _, candidate := range permissions {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || candidate == permission {
+			return true
+		}
+		if strings.HasSuffix(candidate, ":*") && strings.HasPrefix(permission, strings.TrimSuffix(candidate, "*")) {
+			return true
+		}
+	}
+	return false
+}
+
+func scopeAllowed(allowed []string, value string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	value = strings.TrimSpace(value)
+	for _, candidate := range allowed {
+		if candidate == "*" || strings.EqualFold(candidate, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizeIdentifier(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "\\", "-")
+	value = strings.ReplaceAll(value, "/", "-")
+	value = strings.ReplaceAll(value, "..", "-")
+	var out strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' || r == '@' {
+			out.WriteRune(r)
+		}
+	}
+	return strings.Trim(out.String(), ".-_")
 }
 
 func maxFloat(minValue float64, value float64) float64 {

@@ -126,13 +126,17 @@ type AuditLog struct {
 }
 
 type AuditLogFilter struct {
-	Actor        string `json:"actor"`
-	Action       string `json:"action"`
-	ResourceType string `json:"resourceType"`
-	ResourceID   string `json:"resourceId"`
-	ProfileID    string `json:"profileId"`
-	Status       string `json:"status"`
-	Limit        int    `json:"limit"`
+	Actor            string `json:"actor"`
+	Action           string `json:"action"`
+	ResourceType     string `json:"resourceType"`
+	ResourceID       string `json:"resourceId"`
+	ProfileID        string `json:"profileId"`
+	Region           string `json:"region"`
+	CompartmentID    string `json:"compartmentId"`
+	OCIRequestID     string `json:"ociRequestId"`
+	OCIWorkRequestID string `json:"ociWorkRequestId"`
+	Status           string `json:"status"`
+	Limit            int    `json:"limit"`
 }
 
 type InstanceTemplate struct {
@@ -387,6 +391,25 @@ type RebootInstanceRequest struct {
 	Note     string `json:"note"`
 }
 
+type InstanceReinstallRequest struct {
+	ProfileID              string `json:"profileId"`
+	Region                 string `json:"region"`
+	CompartmentID          string `json:"compartmentId"`
+	ImageID                string `json:"imageId"`
+	ImageName              string `json:"imageName"`
+	BootVolumeSizeGB       int    `json:"bootVolumeSizeGb"`
+	BootVolumeVPUsPerGB    int    `json:"bootVolumeVpusPerGb"`
+	PreserveOldBootVolume  bool   `json:"preserveOldBootVolume"`
+	CreateBootVolumeBackup bool   `json:"createBootVolumeBackup"`
+	GenerateRootPassword   bool   `json:"generateRootPassword"`
+	NotifyPasswordInApp    bool   `json:"notifyPasswordInApp"`
+	NotifyPasswordByEmail  bool   `json:"notifyPasswordByEmail"`
+	SSHAuthorizedKey       string `json:"sshAuthorizedKey,omitempty"`
+	CloudInit              string `json:"cloudInit,omitempty"`
+	ConfirmationName       string `json:"confirmationName"`
+	Note                   string `json:"note"`
+}
+
 type CreateInstanceRequest struct {
 	Name                 string            `json:"name"`
 	ProfileID            string            `json:"profileId"`
@@ -576,6 +599,63 @@ type BudgetSettings struct {
 	DeleteBootVolume  bool      `json:"deleteBootVolume"`
 	RequireApproval   bool      `json:"requireApproval"`
 	UpdatedAt         time.Time `json:"updatedAt,omitempty"`
+}
+
+type AccessUser struct {
+	ID                  string    `json:"id"`
+	DisplayName         string    `json:"displayName"`
+	Email               string    `json:"email"`
+	RoleID              string    `json:"roleId"`
+	Status              string    `json:"status"`
+	AllowedProfiles     []string  `json:"allowedProfiles"`
+	AllowedRegions      []string  `json:"allowedRegions"`
+	AllowedCompartments []string  `json:"allowedCompartments"`
+	PasswordHash        string    `json:"-"`
+	PasswordSet         bool      `json:"passwordSet"`
+	LastLoginAt         time.Time `json:"lastLoginAt,omitempty"`
+	UpdatedAt           time.Time `json:"updatedAt,omitempty"`
+}
+
+type AccessRole struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Permissions []string `json:"permissions"`
+	System      bool     `json:"system"`
+}
+
+type AccessControlSettings struct {
+	Enabled   bool         `json:"enabled"`
+	Users     []AccessUser `json:"users"`
+	Roles     []AccessRole `json:"roles"`
+	UpdatedAt time.Time    `json:"updatedAt,omitempty"`
+}
+
+type AccessControlUpdateRequest struct {
+	Enabled bool         `json:"enabled"`
+	Users   []AccessUser `json:"users"`
+}
+
+type AccessPasswordRequest struct {
+	UserID      string `json:"userId"`
+	NewPassword string `json:"newPassword"`
+}
+
+type SecurityGuardrailSettings struct {
+	Enabled                       bool      `json:"enabled"`
+	AllowedRegions                []string  `json:"allowedRegions"`
+	DeniedRegions                 []string  `json:"deniedRegions"`
+	MaxOCPUsPerInstance           int       `json:"maxOcpusPerInstance"`
+	MaxMemoryGBPerInstance        int       `json:"maxMemoryGbPerInstance"`
+	MaxBootVolumeGB               int       `json:"maxBootVolumeGb"`
+	MaxRetryAttempts              int       `json:"maxRetryAttempts"`
+	MaxPublicIPBatchCount         int       `json:"maxPublicIpBatchCount"`
+	RequireApprovalForTerminate   bool      `json:"requireApprovalForTerminate"`
+	BlockBootVolumeDeletion       bool      `json:"blockBootVolumeDeletion"`
+	BlockPublicIPv6RouteChanges   bool      `json:"blockPublicIpv6RouteChanges"`
+	BlockRootPasswordWithoutEmail bool      `json:"blockRootPasswordWithoutEmail"`
+	RequireTemplateForLaunch      bool      `json:"requireTemplateForLaunch"`
+	UpdatedAt                     time.Time `json:"updatedAt,omitempty"`
 }
 
 type NetworkInventoryRequest struct {

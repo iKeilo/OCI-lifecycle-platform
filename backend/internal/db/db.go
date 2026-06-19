@@ -227,9 +227,34 @@ CREATE TABLE IF NOT EXISTS app_settings (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS notifications (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  category TEXT NOT NULL,
+  resource_type TEXT NOT NULL DEFAULT '',
+  resource_id TEXT NOT NULL DEFAULT '',
+  profile_id TEXT NOT NULL DEFAULT '',
+  region TEXT NOT NULL DEFAULT '',
+  compartment_id TEXT NOT NULL DEFAULT '',
+  sensitive BOOLEAN NOT NULL DEFAULT false,
+  read BOOLEAN NOT NULL DEFAULT false,
+  email_requested BOOLEAN NOT NULL DEFAULT false,
+  email_sent BOOLEAN NOT NULL DEFAULT false,
+  email_error TEXT NOT NULL DEFAULT '',
+  webhook_sent BOOLEAN NOT NULL DEFAULT false,
+  webhook_error TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  read_at TIMESTAMPTZ
+);
+
 CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_instances_status ON instances(status);
+CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_read_created_at ON notifications(read, created_at DESC);
 
 ALTER TABLE instances ADD COLUMN IF NOT EXISTS primary_ipv6 TEXT NOT NULL DEFAULT '';
 ALTER TABLE instances ADD COLUMN IF NOT EXISTS ipv6_addresses JSONB NOT NULL DEFAULT '[]'::jsonb;

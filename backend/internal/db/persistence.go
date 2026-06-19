@@ -666,6 +666,33 @@ ON CONFLICT (id) DO UPDATE SET
 	return err
 }
 
+func (s *PostgresSink) DeleteJobs(jobIDs []string) error {
+	if s == nil || s.conn == nil {
+		return ErrNotConfigured()
+	}
+	if len(jobIDs) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	args := make([]any, 0, len(jobIDs))
+	placeholders := make([]string, 0, len(jobIDs))
+	for _, jobID := range jobIDs {
+		jobID = strings.TrimSpace(jobID)
+		if jobID == "" {
+			continue
+		}
+		args = append(args, jobID)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+	}
+	if len(args) == 0 {
+		return nil
+	}
+	_, err := s.conn.ExecContext(ctx, fmt.Sprintf(`DELETE FROM jobs WHERE id IN (%s)`, strings.Join(placeholders, ", ")), args...)
+	return err
+}
+
 func (s *PostgresSink) RecordAudit(entry domain.AuditLog) error {
 	if s == nil || s.conn == nil {
 		return ErrNotConfigured()
@@ -740,6 +767,10 @@ FROM audit_logs`
 	addLike("resource_type", filter.ResourceType)
 	addLike("resource_id", filter.ResourceID)
 	addLike("profile_id", filter.ProfileID)
+	addLike("region", filter.Region)
+	addLike("compartment_id", filter.CompartmentID)
+	addLike("oci_request_id", filter.OCIRequestID)
+	addLike("oci_work_request_id", filter.OCIWorkRequestID)
 	switch strings.ToLower(strings.TrimSpace(filter.Status)) {
 	case "failed":
 		where = append(where, "(COALESCE(error_code, '') <> '' OR COALESCE(error_message, '') <> '')")
@@ -810,6 +841,131 @@ FROM audit_logs`
 	return out, nil
 }
 
+func (s *PostgresSink) SaveNotification(notification domain.Notification) error {
+	if s == nil || s.conn == nil {
+		return ErrNotConfigured()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := s.conn.ExecContext(ctx, `
+INSERT INTO notifications (
+  id, title, message, severity, category, resource_type, resource_id, profile_id, region, compartment_id,
+  sensitive, read, email_requested, email_sent, email_error, webhook_sent, webhook_error, created_by, created_at, read_at
+) VALUES (
+  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+  $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+)
+ON CONFLICT (id) DO UPDATE SET
+  title = EXCLUDED.title,
+  message = EXCLUDED.message,
+  severity = EXCLUDED.severity,
+  category = EXCLUDED.category,
+  resource_type = EXCLUDED.resource_type,
+  resource_id = EXCLUDED.resource_id,
+  profile_id = EXCLUDED.profile_id,
+  region = EXCLUDED.region,
+  compartment_id = EXCLUDED.compartment_id,
+  sensitive = EXCLUDED.sensitive,
+  read = EXCLUDED.read,
+  email_requested = EXCLUDED.email_requested,
+  email_sent = EXCLUDED.email_sent,
+  email_error = EXCLUDED.email_error,
+  webhook_sent = EXCLUDED.webhook_sent,
+  webhook_error = EXCLUDED.webhook_error,
+  created_by = EXCLUDED.created_by,
+  created_at = EXCLUDED.created_at,
+  read_at = EXCLUDED.read_at`,
+		notification.ID,
+		notification.Title,
+		notification.Message,
+		string(notification.Severity),
+		notification.Category,
+		notification.ResourceType,
+		notification.ResourceID,
+		notification.ProfileID,
+		notification.Region,
+		notification.CompartmentID,
+		notification.Sensitive,
+		notification.Read,
+		notification.EmailRequested,
+		notification.EmailSent,
+		notification.EmailError,
+		notification.WebhookSent,
+		notification.WebhookError,
+		notification.CreatedBy,
+		nullableTime(notification.CreatedAt),
+		nullableTimePtr(notification.ReadAt),
+	)
+	return err
+}
+
+func (s *PostgresSink) ListNotifications() ([]domain.Notification, error) {
+	if s == nil || s.conn == nil {
+		return nil, ErrNotConfigured()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rows, err := s.conn.QueryContext(ctx, `
+SELECT id, title, message, severity, category, resource_type, resource_id, profile_id, region, compartment_id,
+       sensitive, read, email_requested, email_sent, email_error, webhook_sent, webhook_error, created_by, created_at, read_at
+FROM notifications
+ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Notification
+	for rows.Next() {
+		var notification domain.Notification
+		var severity string
+		var readAt sql.NullTime
+		if err := rows.Scan(
+			&notification.ID,
+			&notification.Title,
+			&notification.Message,
+			&severity,
+			&notification.Category,
+			&notification.ResourceType,
+			&notification.ResourceID,
+			&notification.ProfileID,
+			&notification.Region,
+			&notification.CompartmentID,
+			&notification.Sensitive,
+			&notification.Read,
+			&notification.EmailRequested,
+			&notification.EmailSent,
+			&notification.EmailError,
+			&notification.WebhookSent,
+			&notification.WebhookError,
+			&notification.CreatedBy,
+			&notification.CreatedAt,
+			&readAt,
+		); err != nil {
+			return nil, err
+		}
+		notification.Severity = domain.NotificationSeverity(severity)
+		if readAt.Valid {
+			value := readAt.Time
+			notification.ReadAt = &value
+		}
+		out = append(out, notification)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *PostgresSink) DeleteNotification(notificationID string) error {
+	if s == nil || s.conn == nil {
+		return ErrNotConfigured()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := s.conn.ExecContext(ctx, `DELETE FROM notifications WHERE id = $1`, notificationID)
+	return err
+}
+
 func (s *PostgresSink) SaveEmailSettings(settings domain.EmailSettings) error {
 	return s.saveSetting("email", settings)
 }
@@ -877,6 +1033,41 @@ func (s *PostgresSink) GetBudgetSettings() (domain.BudgetSettings, error) {
 		return domain.BudgetSettings{}, err
 	}
 	return settings, nil
+}
+
+func (s *PostgresSink) SaveAccessControlSettings(settings domain.AccessControlSettings) error {
+	return s.saveSetting("access", settings)
+}
+
+func (s *PostgresSink) GetAccessControlSettings() (domain.AccessControlSettings, error) {
+	var settings domain.AccessControlSettings
+	if err := s.getSetting("access", &settings); err != nil {
+		return domain.AccessControlSettings{}, err
+	}
+	return settings, nil
+}
+
+func (s *PostgresSink) SaveSecurityGuardrailSettings(settings domain.SecurityGuardrailSettings) error {
+	return s.saveSetting("guardrails", settings)
+}
+
+func (s *PostgresSink) GetSecurityGuardrailSettings() (domain.SecurityGuardrailSettings, error) {
+	var settings domain.SecurityGuardrailSettings
+	if err := s.getSetting("guardrails", &settings); err != nil {
+		return domain.SecurityGuardrailSettings{}, err
+	}
+	return settings, nil
+}
+
+func (s *PostgresSink) HasSetting(key string) (bool, error) {
+	if s == nil || s.conn == nil {
+		return false, ErrNotConfigured()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var exists bool
+	err := s.conn.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM app_settings WHERE key = $1)`, key).Scan(&exists)
+	return exists, err
 }
 
 func (s *PostgresSink) saveSetting(key string, value any) error {
@@ -953,6 +1144,13 @@ func nullableTime(value time.Time) any {
 		return nil
 	}
 	return value
+}
+
+func nullableTimePtr(value *time.Time) any {
+	if value == nil || value.IsZero() {
+		return nil
+	}
+	return *value
 }
 
 func defaultString(value, fallback string) string {

@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Search,
   Server,
+  Settings,
   ShieldAlert,
   Square,
   Trash2,
@@ -23,8 +24,8 @@ import { getSelectedOCIContext, onOCIContextChange } from "../app/ociContext";
 import { AsyncState } from "../components/AsyncState";
 import { PageHeader } from "../components/PageHeader";
 import { StatusPill } from "../components/StatusPill";
-import { createIPTask, createInstanceAction, listInstances } from "../services/api";
-import type { Instance, InstanceActionPayload } from "../services/api";
+import { createIPTask, createInstanceAction, createInstanceReinstallTask, getLaunchOptionsForContext, listInstances } from "../services/api";
+import type { Instance, InstanceActionPayload, LaunchOptions } from "../services/api";
 
 const statusFilters: Array<{ value: "All" | Instance["status"]; label: string }> = [
   { value: "All", label: "全部实例" },
@@ -62,6 +63,7 @@ export function InstancesPage() {
   const [actionMessage, setActionMessage] = useState("");
   const [actionError, setActionError] = useState("");
   const [selectedIpInstance, setSelectedIpInstance] = useState<Instance | null>(null);
+  const [systemSettingsInstance, setSystemSettingsInstance] = useState<Instance | null>(null);
   const [pendingAction, setPendingAction] = useState<{
     instance: Instance;
     action: InstanceActionPayload["action"];
@@ -276,6 +278,10 @@ export function InstancesPage() {
                     <ArrowUpDown size={16} />
                     升降级
                   </button>
+                  <button className="secondary-button" onClick={() => setSystemSettingsInstance(instance)} disabled={isTerminalStatus(instance.status)}>
+                    <Settings size={16} />
+                    系统设置
+                  </button>
                   <button className="secondary-button" onClick={() => setPendingAction({ instance, action: "TERMINATE" })} disabled={isTerminalStatus(instance.status)}>
                     <Trash2 size={16} />
                     终止
@@ -294,6 +300,18 @@ export function InstancesPage() {
           onCreated={(jobId) => {
             setActionMessage(`已创建 IP 管理任务 ${jobId}，可在任务中心查看执行状态。`);
             setSelectedIpInstance(null);
+            void reloadInstances();
+          }}
+        />
+      ) : null}
+
+      {systemSettingsInstance ? (
+        <InstanceSystemSettingsModal
+          instance={systemSettingsInstance}
+          onClose={() => setSystemSettingsInstance(null)}
+          onCreated={(jobId) => {
+            setActionMessage(`已创建系统设置任务 ${jobId}，可在任务中心查看执行状态。`);
+            setSystemSettingsInstance(null);
             void reloadInstances();
           }}
         />
@@ -384,6 +402,203 @@ function ConfirmActionModal({
           {isSubmitting ? "提交中..." : `确认${label}`}
         </button>
         <button className="secondary-button full" disabled={isSubmitting} onClick={onClose}>取消</button>
+      </div>
+    </div>
+  );
+}
+
+function InstanceSystemSettingsModal({
+  instance,
+  onClose,
+  onCreated
+}: {
+  instance: Instance;
+  onClose: () => void;
+  onCreated: (jobId: string) => void;
+}) {
+  const context = getSelectedOCIContext();
+  const profileId = instance.profileId || context.profileId;
+  const region = instance.region || context.region;
+  const compartmentId = instance.compartmentId || "";
+  const currentBootVolumeGb = Math.max(50, Number(instance.bootVolumeGb) || 50);
+  const currentBootVolumeVpusPerGb = normalizeBootVolumeVpus(Number(instance.bootVolumeVpusPerGb) || 10);
+  const [options, setOptions] = useState<LaunchOptions | null>(null);
+  const [loadingOptions, setLoadingOptions] = useState(false);
+  const [optionsError, setOptionsError] = useState("");
+  const [imageId, setImageId] = useState("");
+  const [bootVolumeSizeGb, setBootVolumeSizeGb] = useState(currentBootVolumeGb);
+  const [bootVolumeVpusPerGb, setBootVolumeVpusPerGb] = useState(currentBootVolumeVpusPerGb);
+  const [preserveOldBootVolume, setPreserveOldBootVolume] = useState(true);
+  const [confirmationName, setConfirmationName] = useState("");
+  const [note, setNote] = useState("");
+  const [submitError, setSubmitError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadOptions() {
+      setLoadingOptions(true);
+      setOptionsError("");
+      try {
+        const value = await getLaunchOptionsForContext({
+          profileId,
+          region,
+          compartmentId,
+          shape: instance.shape
+        });
+        if (cancelled) return;
+        setOptions(value);
+        const images = reinstallImagesForShape(value, instance.shape);
+        if (images.length > 0) {
+          setImageId((current) => current || images[0].id);
+        }
+      } catch (error) {
+        if (!cancelled) setOptionsError(error instanceof Error ? error.message : "加载镜像选项失败");
+      } finally {
+        if (!cancelled) setLoadingOptions(false);
+      }
+    }
+    void loadOptions();
+    return () => {
+      cancelled = true;
+    };
+  }, [compartmentId, instance.shape, profileId, region]);
+
+  const images = options ? reinstallImagesForShape(options, instance.shape) : [];
+  const selectedImage = images.find((item) => item.id === imageId);
+  const bootVolumeTooSmall = bootVolumeSizeGb < currentBootVolumeGb;
+  const canSubmitReinstall = imageId && confirmationName.trim() === instance.name.trim() && !bootVolumeTooSmall && !isSubmitting;
+
+  async function submitReinstall() {
+    if (!canSubmitReinstall) return;
+    setIsSubmitting(true);
+    setSubmitError("");
+    try {
+      const job = await createInstanceReinstallTask(instance.id, {
+        profileId,
+        region,
+        compartmentId,
+        imageId,
+        imageName: selectedImage?.label ?? "",
+        bootVolumeSizeGb,
+        bootVolumeVpusPerGb,
+        preserveOldBootVolume,
+        createBootVolumeBackup: false,
+        confirmationName,
+        note
+      });
+      onCreated(job.id);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "创建重装系统任务失败");
+      setIsSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="action-modal glass-modal system-settings-modal">
+        <div className="modal-header-row">
+          <div className="modal-title-block">
+            <div className="modal-icon compact">
+              <Settings size={24} />
+            </div>
+            <div>
+              <h2>系统设置</h2>
+              <p>{instance.name} 的系统重装。高风险操作会进入任务中心、审计日志和通知中心。</p>
+            </div>
+          </div>
+          <button className="icon-button bordered" aria-label="关闭系统设置" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="modal-summary-card">
+          <div><span>实例</span><strong>{instance.name}</strong></div>
+          <div><span>Shape</span><strong>{instance.shape}</strong></div>
+          <div><span>区域</span><strong>{region}</strong></div>
+          <div><span>启动盘</span><strong>{currentBootVolumeGb} GB / {currentBootVolumeVpusPerGb} VPUs</strong></div>
+        </div>
+
+        <div className="form-section">
+          <div className="form-section-title">
+            <RefreshCw size={18} />
+            <span>目标镜像</span>
+          </div>
+          {loadingOptions ? <div className="async-state compact">正在加载当前 Shape 兼容镜像...</div> : null}
+          {optionsError ? <div className="inline-error">{optionsError}</div> : null}
+          <label>
+            Image
+            <select value={imageId} onChange={(event) => setImageId(event.target.value)} disabled={loadingOptions || images.length === 0}>
+              {images.length === 0 ? <option value="">没有可用镜像选项</option> : null}
+              {images.map((image) => (
+                <option value={image.id} key={image.id}>{image.label}</option>
+              ))}
+            </select>
+          </label>
+          <p className="muted-line">镜像选项来自 Launch Options 的 Shape/Image 缓存，并按当前 Shape 过滤。</p>
+        </div>
+
+        <div className="form-section">
+          <div className="form-section-title">
+            <HardDrive size={18} />
+            <span>启动盘</span>
+          </div>
+          <div className="form-grid">
+            <label>
+              目标启动盘 GB
+              <input
+                type="number"
+                min={currentBootVolumeGb}
+                value={bootVolumeSizeGb}
+                onChange={(event) => setBootVolumeSizeGb(Number(event.target.value))}
+              />
+            </label>
+            <label>
+              目标硬盘性能
+              <select value={bootVolumeVpusPerGb} onChange={(event) => setBootVolumeVpusPerGb(Number(event.target.value))}>
+                {BOOT_VOLUME_VPU_OPTIONS.map((value) => (
+                  <option value={value} key={value}>{value} VPUs/GB{value === 10 ? " / Balanced" : ""}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {bootVolumeTooSmall ? <div className="inline-error">目标启动盘不能小于当前大小 {currentBootVolumeGb} GB。OCI 启动盘不能降盘。</div> : null}
+        </div>
+
+        <div className="switch-panel">
+          <div className="switch-row">
+            <div>
+              <strong>保留旧启动盘</strong>
+              <p>开启后 OCI 在成功替换启动盘后保留旧启动盘，便于人工回滚和取数。关闭属于高风险操作。</p>
+            </div>
+            <button className={`toggle-switch ${preserveOldBootVolume ? "on" : ""}`} onClick={() => setPreserveOldBootVolume((value) => !value)} />
+          </div>
+        </div>
+
+        <div className="form-section">
+          <div className="form-grid">
+            <label>
+              输入实例名确认
+              <input value={confirmationName} onChange={(event) => setConfirmationName(event.target.value)} placeholder={instance.name} />
+            </label>
+            <label>
+              任务备注
+              <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="例如：重装为新的 Oracle Linux 镜像" />
+            </label>
+          </div>
+        </div>
+
+        <div className="modal-warning">
+          <ShieldAlert size={18} />
+          <span>重装系统会替换启动盘中的操作系统。请确认重要数据已备份；提交后由后端调用真实 OCI UpdateInstance，并向管理员推送任务创建、成功或失败通知。</span>
+        </div>
+        {submitError ? <div className="inline-error">{submitError}</div> : null}
+        <div className="button-row">
+          <button className="secondary-button" disabled={isSubmitting} onClick={onClose}>取消</button>
+          <button className="primary-button danger" disabled={!canSubmitReinstall} onClick={() => void submitReinstall()}>
+            {isSubmitting ? "提交中..." : "创建重装系统任务"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -886,6 +1101,12 @@ function formatIPv6(instance: Instance) {
 
 function isFlexibleShapeName(shape: string) {
   return String(shape || "").trim().toLowerCase().endsWith(".flex");
+}
+
+function reinstallImagesForShape(options: LaunchOptions, shapeName: string) {
+  const byShape = options.shapeImages?.[shapeName] ?? [];
+  if (byShape.length > 0) return byShape;
+  return options.images ?? [];
 }
 
 function estimateResizeBudgetChange(

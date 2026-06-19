@@ -52,6 +52,38 @@ type InstanceActionExecutionResult struct {
 	PreserveBootDisk             bool      `json:"preserveBootVolume"`
 }
 
+type InstanceReinstallExecutionRequest struct {
+	InstanceID             string
+	ImageID                string
+	ImageName              string
+	BootVolumeSizeGB       int
+	BootVolumeVPUsPerGB    int
+	PreserveOldBootVolume  bool
+	CreateBootVolumeBackup bool
+	JobID                  string
+}
+
+type InstanceReinstallExecutionResult struct {
+	Verified                  bool      `json:"verified"`
+	ExecutionMode             string    `json:"executionMode"`
+	InstanceID                string    `json:"instanceId"`
+	ImageID                   string    `json:"imageId"`
+	ImageName                 string    `json:"imageName,omitempty"`
+	RequestID                 string    `json:"requestId,omitempty"`
+	WorkRequestID             string    `json:"workRequestId,omitempty"`
+	InitialState              string    `json:"initialState,omitempty"`
+	FinalState                string    `json:"finalState,omitempty"`
+	BootVolumeSizeGB          int       `json:"bootVolumeSizeGb,omitempty"`
+	BootVolumeVPUsPerGB       int       `json:"bootVolumeVpusPerGb,omitempty"`
+	TargetBootVolumeGB        int       `json:"targetBootVolumeGb,omitempty"`
+	TargetBootVolumeVPUsPerGB int       `json:"targetBootVolumeVpusPerGb,omitempty"`
+	PreserveOldBootVolume     bool      `json:"preserveOldBootVolume"`
+	ErrorCode                 string    `json:"errorCode,omitempty"`
+	ErrorMessage              string    `json:"errorMessage,omitempty"`
+	ExecutedAt                time.Time `json:"executedAt"`
+	WaitedForState            bool      `json:"waitedForState"`
+}
+
 func ExecuteInstanceLifecycleAction(ctx context.Context, cfg ReadinessConfig, req InstanceActionExecutionRequest) InstanceActionExecutionResult {
 	result := InstanceActionExecutionResult{
 		ExecutionMode:             cfg.ExecutionMode,
@@ -133,6 +165,130 @@ func ExecuteInstanceLifecycleAction(ctx context.Context, cfg ReadinessConfig, re
 	}
 }
 
+func ExecuteInstanceReinstall(ctx context.Context, cfg ReadinessConfig, req InstanceReinstallExecutionRequest) InstanceReinstallExecutionResult {
+	result := InstanceReinstallExecutionResult{
+		ExecutionMode:             cfg.ExecutionMode,
+		InstanceID:                req.InstanceID,
+		ImageID:                   req.ImageID,
+		ImageName:                 req.ImageName,
+		BootVolumeSizeGB:          req.BootVolumeSizeGB,
+		BootVolumeVPUsPerGB:       req.BootVolumeVPUsPerGB,
+		TargetBootVolumeGB:        req.BootVolumeSizeGB,
+		TargetBootVolumeVPUsPerGB: req.BootVolumeVPUsPerGB,
+		PreserveOldBootVolume:     req.PreserveOldBootVolume,
+		ExecutedAt:                time.Now().UTC(),
+	}
+	readiness := CheckReadiness(cfg)
+	if !readiness.Ready {
+		result.ErrorCode = "OCI_NOT_READY"
+		result.ErrorMessage = readiness.Message
+		return result
+	}
+	if strings.TrimSpace(req.InstanceID) == "" {
+		result.ErrorCode = "OCI_INSTANCE_ID_REQUIRED"
+		result.ErrorMessage = "OCI instance OCID is required"
+		return result
+	}
+	if strings.TrimSpace(req.ImageID) == "" {
+		result.ErrorCode = "OCI_REINSTALL_IMAGE_REQUIRED"
+		result.ErrorMessage = "imageId is required"
+		return result
+	}
+	if req.CreateBootVolumeBackup {
+		result.ErrorCode = "OCI_REINSTALL_BACKUP_NOT_IMPLEMENTED"
+		result.ErrorMessage = "boot volume backup before reinstall is not implemented yet"
+		return result
+	}
+
+	clients, err := NewClients(cfg)
+	if err != nil {
+		result.ErrorCode = "OCI_CLIENT_INIT_FAILED"
+		result.ErrorMessage = err.Error()
+		return result
+	}
+
+	current, err := clients.Compute.GetInstance(ctx, core.GetInstanceRequest{InstanceId: common.String(req.InstanceID)})
+	if current.OpcRequestId != nil && result.RequestID == "" {
+		result.RequestID = *current.OpcRequestId
+	}
+	if err != nil {
+		result.ErrorCode = "OCI_GET_INSTANCE_FAILED"
+		result.ErrorMessage = err.Error()
+		return result
+	}
+	result.InitialState = string(current.Instance.LifecycleState)
+
+	source := core.UpdateInstanceSourceViaImageDetails{
+		ImageId:                     common.String(strings.TrimSpace(req.ImageID)),
+		IsPreserveBootVolumeEnabled: common.Bool(req.PreserveOldBootVolume),
+	}
+	if req.BootVolumeSizeGB > 0 {
+		source.BootVolumeSizeInGBs = common.Int64(int64(req.BootVolumeSizeGB))
+	}
+	response, err := clients.Compute.UpdateInstance(ctx, core.UpdateInstanceRequest{
+		InstanceId: common.String(req.InstanceID),
+		UpdateInstanceDetails: core.UpdateInstanceDetails{
+			SourceDetails:             source,
+			UpdateOperationConstraint: core.UpdateInstanceDetailsUpdateOperationConstraintAllowDowntime,
+		},
+		OpcRetryToken: retryToken("reinstall", req.JobID),
+		OpcRequestId:  requestID("codex-reinstall", req.JobID),
+	})
+	if response.OpcRequestId != nil {
+		result.RequestID = *response.OpcRequestId
+	}
+	if response.OpcWorkRequestId != nil {
+		result.WorkRequestID = *response.OpcWorkRequestId
+	}
+	if err != nil {
+		result.ErrorCode = "OCI_REINSTALL_INSTANCE_FAILED"
+		result.ErrorMessage = err.Error()
+		return result
+	}
+	result.WaitedForState = true
+	state, err := waitInstanceState(ctx, clients, req.InstanceID, 15*time.Minute, core.InstanceLifecycleStateRunning, core.InstanceLifecycleStateStopped)
+	result.FinalState = string(state)
+	if err != nil {
+		result.ErrorCode = "OCI_WAIT_REINSTALLED_INSTANCE_FAILED"
+		result.ErrorMessage = err.Error()
+		return result
+	}
+	result.Verified = true
+
+	if req.BootVolumeVPUsPerGB > 0 {
+		actionReq := InstanceActionExecutionRequest{
+			InstanceID:                req.InstanceID,
+			TargetBootVolumeGB:        req.BootVolumeSizeGB,
+			TargetBootVolumeVPUsPerGB: req.BootVolumeVPUsPerGB,
+			ExpandBootVolume:          true,
+			JobID:                     req.JobID,
+		}
+		actionResult := InstanceActionExecutionResult{
+			Verified:                  true,
+			ExecutionMode:             cfg.ExecutionMode,
+			InstanceID:                req.InstanceID,
+			RequestID:                 result.RequestID,
+			WorkRequestID:             result.WorkRequestID,
+			FinalState:                result.FinalState,
+			TargetBootVolumeGB:        req.BootVolumeSizeGB,
+			TargetBootVolumeVPUsPerGB: req.BootVolumeVPUsPerGB,
+			ExecutedAt:                result.ExecutedAt,
+			WaitedForState:            true,
+			PreserveBootDisk:          req.PreserveOldBootVolume,
+		}
+		actionResult = executeBootVolumeExpansion(ctx, clients, actionReq, actionResult, current.Instance)
+		result.RequestID = actionResult.RequestID
+		result.TargetBootVolumeGB = actionResult.TargetBootVolumeGB
+		result.TargetBootVolumeVPUsPerGB = actionResult.TargetBootVolumeVPUsPerGB
+		if !actionResult.Verified {
+			result.Verified = false
+			result.ErrorCode = actionResult.ErrorCode
+			result.ErrorMessage = actionResult.ErrorMessage
+		}
+	}
+	return result
+}
+
 func executePowerAction(ctx context.Context, clients Clients, req InstanceActionExecutionRequest, result InstanceActionExecutionResult, action core.InstanceActionActionEnum, target core.InstanceLifecycleStateEnum) InstanceActionExecutionResult {
 	response, err := clients.Compute.InstanceAction(ctx, core.InstanceActionRequest{
 		InstanceId:    common.String(req.InstanceID),
@@ -161,6 +317,15 @@ func executeResize(ctx context.Context, clients Clients, req InstanceActionExecu
 	if targetIsFlexible && (req.TargetOCPUs <= 0 || req.TargetMemoryGB <= 0) {
 		result.ErrorCode = "OCI_RESIZE_SHAPE_CONFIG_REQUIRED"
 		result.ErrorMessage = "targetOcpus and targetMemoryGb must be greater than zero for flexible shapes"
+		return result
+	}
+
+	if !instanceResizeRequired(instance, req) {
+		result.FinalState = string(instance.LifecycleState)
+		result.Verified = true
+		if req.ExpandBootVolume || req.TargetBootVolumeVPUsPerGB > 0 {
+			return executeBootVolumeExpansion(ctx, clients, req, result, instance)
+		}
 		return result
 	}
 
@@ -234,39 +399,30 @@ func executeBootVolumeExpansion(ctx context.Context, clients Clients, req Instan
 	}
 
 	bootVolumeID := ""
-	for _, attachment := range attachments.Items {
-		if attachment.LifecycleState == core.BootVolumeAttachmentLifecycleStateDetached || attachment.LifecycleState == core.BootVolumeAttachmentLifecycleStateDetaching {
-			continue
-		}
-		if attachment.BootVolumeId != nil && *attachment.BootVolumeId != "" {
-			bootVolumeID = *attachment.BootVolumeId
-			break
-		}
-	}
+	bootVolumeID = firstAttachedBootVolumeID(attachments.Items)
 	if bootVolumeID == "" {
-		result.ErrorCode = "OCI_BOOT_VOLUME_ATTACHMENT_NOT_FOUND"
-		result.ErrorMessage = "no attached boot volume found for instance"
-		result.Verified = false
-		return result
+		bootVolumeID, err = waitBootVolumeAttachment(ctx, clients, availabilityDomain, compartmentID, req.InstanceID, 10*time.Minute, requestID("codex-list-boot-volume", req.JobID))
+		if err != nil {
+			result.ErrorCode = "OCI_BOOT_VOLUME_ATTACHMENT_NOT_FOUND"
+			result.ErrorMessage = err.Error()
+			result.Verified = false
+			return result
+		}
 	}
 	result.BootVolumeID = bootVolumeID
 
-	bootVolume, err := clients.Blockstorage.GetBootVolume(ctx, core.GetBootVolumeRequest{
-		BootVolumeId: common.String(bootVolumeID),
-		OpcRequestId: requestID("codex-get-boot-volume", req.JobID),
-	})
-	appendFirstRequestID(&result.RequestID, bootVolume.OpcRequestId)
+	readyVolume, err := waitBootVolumeReady(ctx, clients, bootVolumeID, 20*time.Minute, requestID("codex-get-boot-volume", req.JobID))
 	if err != nil {
-		result.ErrorCode = "OCI_GET_BOOT_VOLUME_FAILED"
+		result.ErrorCode = "OCI_WAIT_BOOT_VOLUME_READY_FAILED"
 		result.ErrorMessage = err.Error()
 		result.Verified = false
 		return result
 	}
-	if bootVolume.BootVolume.SizeInGBs != nil {
-		result.CurrentBootVolumeGB = int(*bootVolume.BootVolume.SizeInGBs)
+	if readyVolume.SizeInGBs != nil {
+		result.CurrentBootVolumeGB = int(*readyVolume.SizeInGBs)
 	}
-	if bootVolume.BootVolume.VpusPerGB != nil {
-		result.CurrentBootVolumeVPUsPerGB = int(*bootVolume.BootVolume.VpusPerGB)
+	if readyVolume.VpusPerGB != nil {
+		result.CurrentBootVolumeVPUsPerGB = int(*readyVolume.VpusPerGB)
 	}
 	targetBootVolumeGB := req.TargetBootVolumeGB
 	if targetBootVolumeGB <= 0 {
@@ -329,6 +485,102 @@ func executeBootVolumeExpansion(ctx context.Context, clients Clients, req Instan
 	return result
 }
 
+func instanceResizeRequired(instance core.Instance, req InstanceActionExecutionRequest) bool {
+	if strings.TrimSpace(stringValue(instance.Shape)) != strings.TrimSpace(req.TargetShape) {
+		return true
+	}
+	if !isFlexibleShape(req.TargetShape) {
+		return false
+	}
+	if instance.ShapeConfig == nil {
+		return true
+	}
+	currentOCPUs := intFromFloat32Ptr(instance.ShapeConfig.Ocpus)
+	currentMemoryGB := intFromFloat32Ptr(instance.ShapeConfig.MemoryInGBs)
+	return currentOCPUs != req.TargetOCPUs || currentMemoryGB != req.TargetMemoryGB
+}
+
+func intFromFloat32Ptr(value *float32) int {
+	if value == nil {
+		return 0
+	}
+	return int(*value)
+}
+
+func bootVolumeReady(volume core.BootVolume) bool {
+	hydrated := volume.IsHydrated == nil || *volume.IsHydrated
+	return volume.LifecycleState == core.BootVolumeLifecycleStateAvailable && hydrated
+}
+
+func waitBootVolumeReady(ctx context.Context, clients Clients, bootVolumeID string, timeout time.Duration, opcRequestID *string) (core.BootVolume, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		response, err := clients.Blockstorage.GetBootVolume(ctx, core.GetBootVolumeRequest{
+			BootVolumeId: common.String(bootVolumeID),
+			OpcRequestId: opcRequestID,
+		})
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = nil
+			if bootVolumeReady(response.BootVolume) {
+				return response.BootVolume, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return core.BootVolume{}, fmt.Errorf("boot volume %s did not become available and hydrated before timeout; last error: %w", bootVolumeID, lastErr)
+			}
+			return core.BootVolume{}, fmt.Errorf("boot volume %s did not become available and hydrated before timeout", bootVolumeID)
+		}
+		select {
+		case <-ctx.Done():
+			return core.BootVolume{}, ctx.Err()
+		case <-time.After(15 * time.Second):
+		}
+	}
+}
+
+func firstAttachedBootVolumeID(items []core.BootVolumeAttachment) string {
+	for _, attachment := range items {
+		if attachment.LifecycleState == core.BootVolumeAttachmentLifecycleStateDetached || attachment.LifecycleState == core.BootVolumeAttachmentLifecycleStateDetaching {
+			continue
+		}
+		if attachment.BootVolumeId != nil && *attachment.BootVolumeId != "" {
+			return *attachment.BootVolumeId
+		}
+	}
+	return ""
+}
+
+func waitBootVolumeAttachment(ctx context.Context, clients Clients, availabilityDomain, compartmentID, instanceID string, timeout time.Duration, opcRequestID *string) (string, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		attachments, err := clients.Compute.ListBootVolumeAttachments(ctx, core.ListBootVolumeAttachmentsRequest{
+			AvailabilityDomain: common.String(availabilityDomain),
+			CompartmentId:      common.String(compartmentID),
+			InstanceId:         common.String(instanceID),
+			Limit:              common.Int(25),
+			OpcRequestId:       opcRequestID,
+		})
+		if err != nil {
+			return "", err
+		}
+		if bootVolumeID := firstAttachedBootVolumeID(attachments.Items); bootVolumeID != "" {
+			return bootVolumeID, nil
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("no attached boot volume found for instance %s before timeout", instanceID)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(10 * time.Second):
+		}
+	}
+}
+
 func waitBootVolumeSize(ctx context.Context, clients Clients, bootVolumeID string, targetGB int, timeout time.Duration) error {
 	return waitBootVolumeTarget(ctx, clients, bootVolumeID, targetGB, 0, timeout)
 }
@@ -349,7 +601,7 @@ func waitBootVolumeTarget(ctx context.Context, clients Clients, bootVolumeID str
 			currentVPUsPerGB = int(*response.BootVolume.VpusPerGB)
 		}
 		vpusReady := targetVPUsPerGB <= 0 || currentVPUsPerGB == targetVPUsPerGB
-		if currentGB >= targetGB && vpusReady && response.BootVolume.LifecycleState == core.BootVolumeLifecycleStateAvailable {
+		if currentGB >= targetGB && vpusReady && bootVolumeReady(response.BootVolume) {
 			return nil
 		}
 		if time.Now().After(deadline) {

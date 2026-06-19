@@ -1,8 +1,8 @@
-import { Bell, CheckCheck, MailWarning, ShieldAlert } from "lucide-react";
+import { Bell, CheckCheck, MailWarning, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AsyncState } from "../components/AsyncState";
 import { PageHeader } from "../components/PageHeader";
-import { listNotifications, markAllNotificationsRead, markNotificationRead } from "../services/api";
+import { deleteNotification, listNotifications, markAllNotificationsRead, markNotificationRead } from "../services/api";
 import type { Notification } from "../services/api";
 
 export function NotificationsPage() {
@@ -37,6 +37,16 @@ export function NotificationsPage() {
   async function markAllRead() {
     await markAllNotificationsRead();
     await load();
+  }
+
+  async function removeNotification(id: string) {
+    setErrorMessage("");
+    try {
+      await deleteNotification(id);
+      await load();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "删除通知失败");
+    }
   }
 
   return (
@@ -79,13 +89,18 @@ export function NotificationsPage() {
                   ) : null}
                 </div>
               </div>
-              {!item.read ? (
-                <button className="icon-button bordered" aria-label="标记已读" onClick={() => void markRead(item.id)}>
-                  <CheckCheck size={18} />
+              <div className="notification-actions">
+                {!item.read ? (
+                  <button className="icon-button bordered" aria-label="标记已读" onClick={() => void markRead(item.id)}>
+                    <CheckCheck size={18} />
+                  </button>
+                ) : (
+                  <MailWarning size={18} className="muted-icon" />
+                )}
+                <button className="icon-button bordered danger" aria-label="删除通知" onClick={() => void removeNotification(item.id)}>
+                  <Trash2 size={18} />
                 </button>
-              ) : (
-                <MailWarning size={18} className="muted-icon" />
-              )}
+              </div>
             </article>
           ))}
         </section>

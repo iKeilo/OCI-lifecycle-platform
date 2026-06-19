@@ -273,6 +273,10 @@ export type AuditLogFilter = {
   resourceType?: string;
   resourceId?: string;
   profileId?: string;
+  region?: string;
+  compartmentId?: string;
+  ociRequestId?: string;
+  ociWorkRequestId?: string;
   status?: "success" | "failed" | "";
   limit?: number;
 };
@@ -552,6 +556,53 @@ export type CreateInstanceResponse = {
 export type AuthStatus = {
   authEnabled: boolean;
   authenticated: boolean;
+  user?: AccessUser;
+};
+
+export type AccessRole = {
+  id: string;
+  name: string;
+  description: string;
+  permissions: string[];
+  system: boolean;
+};
+
+export type AccessUser = {
+  id: string;
+  displayName: string;
+  email: string;
+  roleId: string;
+  status: string;
+  allowedProfiles: string[];
+  allowedRegions: string[];
+  allowedCompartments: string[];
+  passwordSet: boolean;
+  lastLoginAt?: string;
+  updatedAt?: string;
+};
+
+export type AccessControlSettings = {
+  enabled: boolean;
+  users: AccessUser[];
+  roles: AccessRole[];
+  updatedAt?: string;
+};
+
+export type SecurityGuardrails = {
+  enabled: boolean;
+  allowedRegions: string[];
+  deniedRegions: string[];
+  maxOcpusPerInstance: number;
+  maxMemoryGbPerInstance: number;
+  maxBootVolumeGb: number;
+  maxRetryAttempts: number;
+  maxPublicIpBatchCount: number;
+  requireApprovalForTerminate: boolean;
+  blockBootVolumeDeletion: boolean;
+  blockPublicIpv6RouteChanges: boolean;
+  blockRootPasswordWithoutEmail: boolean;
+  requireTemplateForLaunch: boolean;
+  updatedAt?: string;
 };
 
 export type AutomationTaskResponse = {
@@ -577,6 +628,20 @@ export type InstanceActionPayload = {
   note: string;
 };
 
+export type InstanceReinstallPayload = {
+  profileId: string;
+  region: string;
+  compartmentId: string;
+  imageId: string;
+  imageName: string;
+  bootVolumeSizeGb: number;
+  bootVolumeVpusPerGb: number;
+  preserveOldBootVolume: boolean;
+  createBootVolumeBackup: boolean;
+  confirmationName: string;
+  note: string;
+};
+
 export async function createIPTask(instanceId: string, payload: IPTaskPayload): Promise<Job> {
   return request<Job>(`/api/instances/${encodeURIComponent(instanceId)}/ip-tasks`, {
     method: "POST",
@@ -586,6 +651,13 @@ export async function createIPTask(instanceId: string, payload: IPTaskPayload): 
 
 export async function createInstanceAction(instanceId: string, payload: InstanceActionPayload): Promise<Job> {
   return request<Job>(`/api/instances/${encodeURIComponent(instanceId)}/actions`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function createInstanceReinstallTask(instanceId: string, payload: InstanceReinstallPayload): Promise<Job> {
+  return request<Job>(`/api/instances/${encodeURIComponent(instanceId)}/system/reinstall`, {
     method: "POST",
     body: JSON.stringify(payload)
   });
@@ -754,6 +826,13 @@ export async function retryJob(jobId: string): Promise<Job> {
   });
 }
 
+export async function clearCompletedJobs(): Promise<{ deletedCount: number; items: Job[] }> {
+  return request<{ deletedCount: number; items: Job[] }>("/api/jobs/clear-completed", {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
 export async function listNotifications(unreadOnly = false): Promise<NotificationListResponse> {
   return request<NotificationListResponse>(`/api/notifications${unreadOnly ? "?unread=true" : ""}`);
 }
@@ -769,6 +848,12 @@ export async function markAllNotificationsRead(): Promise<ListResponse<Notificat
   return request<ListResponse<Notification>>("/api/notifications/read-all", {
     method: "POST",
     body: JSON.stringify({})
+  });
+}
+
+export async function deleteNotification(id: string): Promise<void> {
+  await request<unknown>(`/api/notifications/${encodeURIComponent(id)}`, {
+    method: "DELETE"
   });
 }
 
@@ -895,10 +980,10 @@ export async function getAuthStatus(): Promise<AuthStatus> {
   return request<AuthStatus>("/api/auth/me");
 }
 
-export async function login(password: string): Promise<AuthStatus> {
+export async function login(password: string, username = ""): Promise<AuthStatus> {
   return request<AuthStatus>("/api/auth/login", {
     method: "POST",
-    body: JSON.stringify({ password })
+    body: JSON.stringify({ username, password })
   });
 }
 
@@ -906,6 +991,35 @@ export async function logout(): Promise<AuthStatus> {
   return request<AuthStatus>("/api/auth/logout", {
     method: "POST",
     body: JSON.stringify({})
+  });
+}
+
+export async function getAccessControlSettings(): Promise<AccessControlSettings> {
+  return request<AccessControlSettings>("/api/access-control");
+}
+
+export async function updateAccessControlSettings(payload: AccessControlSettings): Promise<AccessControlSettings> {
+  return request<AccessControlSettings>("/api/access-control", {
+    method: "PUT",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function setAccessUserPassword(userId: string, newPassword: string): Promise<AccessControlSettings> {
+  return request<AccessControlSettings>(`/api/access-control/users/${encodeURIComponent(userId)}/password`, {
+    method: "POST",
+    body: JSON.stringify({ userId, newPassword })
+  });
+}
+
+export async function getSecurityGuardrails(): Promise<SecurityGuardrails> {
+  return request<SecurityGuardrails>("/api/security/guardrails");
+}
+
+export async function updateSecurityGuardrails(payload: SecurityGuardrails): Promise<SecurityGuardrails> {
+  return request<SecurityGuardrails>("/api/security/guardrails", {
+    method: "PUT",
+    body: JSON.stringify(payload)
   });
 }
 

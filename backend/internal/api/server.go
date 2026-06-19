@@ -16,6 +16,7 @@ import (
 
 	"a-series-oracle/backend/internal/auth"
 	"a-series-oracle/backend/internal/domain"
+	"a-series-oracle/backend/internal/lifecyclenotify"
 	"a-series-oracle/backend/internal/notify"
 	"a-series-oracle/backend/internal/oci"
 	"a-series-oracle/backend/internal/store"
@@ -30,6 +31,8 @@ type Server struct {
 	profileResolver OCIProfileResolver
 	auth            *auth.Manager
 }
+
+type requestUserContextKey struct{}
 
 type OCIProfileResolver interface {
 	Resolve(profileID string, region string) (oci.ReadinessConfig, domain.Profile, error)
@@ -88,6 +91,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/account/password", s.handleUpdateAccountPassword)
 	s.mux.HandleFunc("GET /api/settings/appearance", s.handleAppearanceSettings)
 	s.mux.HandleFunc("PUT /api/settings/appearance", s.handleUpdateAppearanceSettings)
+	s.mux.HandleFunc("GET /api/access-control", s.handleAccessControlSettings)
+	s.mux.HandleFunc("PUT /api/access-control", s.handleUpdateAccessControlSettings)
+	s.mux.HandleFunc("POST /api/access-control/users/{id}/password", s.handleSetAccessUserPassword)
+	s.mux.HandleFunc("GET /api/security/guardrails", s.handleSecurityGuardrails)
+	s.mux.HandleFunc("PUT /api/security/guardrails", s.handleUpdateSecurityGuardrails)
 	s.mux.HandleFunc("GET /api/budget/settings", s.handleBudgetSettings)
 	s.mux.HandleFunc("PUT /api/budget/settings", s.handleUpdateBudgetSettings)
 	s.mux.HandleFunc("GET /api/oci/readiness", s.handleOCIReadiness)
@@ -116,14 +124,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/instances/{id}/actions", s.handleInstanceAction)
 	s.mux.HandleFunc("POST /api/instances/{id}/reboot", s.handleRebootInstance)
 	s.mux.HandleFunc("POST /api/instances/{id}/ip-tasks", s.handleCreateIPTask)
+	s.mux.HandleFunc("POST /api/instances/{id}/system/reinstall", s.handleInstanceReinstall)
 	s.mux.HandleFunc("GET /api/network/inventory", s.handleNetworkInventory)
 	s.mux.HandleFunc("POST /api/network/public-ips/batch", s.handlePublicIPBatchTask)
 	s.mux.HandleFunc("GET /api/jobs", s.handleJobs)
+	s.mux.HandleFunc("POST /api/jobs/clear-completed", s.handleClearCompletedJobs)
 	s.mux.HandleFunc("GET /api/jobs/{id}", s.handleJob)
 	s.mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancelJob)
 	s.mux.HandleFunc("POST /api/jobs/{id}/retry", s.handleRetryJob)
 	s.mux.HandleFunc("GET /api/notifications", s.handleNotifications)
 	s.mux.HandleFunc("POST /api/notifications/{id}/read", s.handleReadNotification)
+	s.mux.HandleFunc("DELETE /api/notifications/{id}", s.handleDeleteNotification)
 	s.mux.HandleFunc("POST /api/notifications/read-all", s.handleReadAllNotifications)
 	s.mux.HandleFunc("GET /api/audit-logs", s.handleAuditLogs)
 	s.mux.HandleFunc("GET /api/email/settings", s.handleEmailSettings)
@@ -147,14 +158,18 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
+	userID, _ := s.currentUserID(r)
+	user, _ := s.store.GetAccessUser(userID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authEnabled":   s.auth != nil && s.auth.Enabled(),
 		"authenticated": s.auth == nil || s.auth.IsAuthenticated(r),
+		"user":          user,
 	})
 }
 
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		Username string `json:"username"`
 		Password string `json:"password"`
 	}
 	if s.auth == nil || !s.auth.Enabled() {
@@ -168,14 +183,31 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
 		return
 	}
+	username := strings.TrimSpace(req.Username)
+	if username != "" {
+		user, ok := s.store.VerifyAccessUser(username, req.Password)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "INVALID_PASSWORD", "invalid username or password")
+			return
+		}
+		s.auth.IssueSessionFor(w, user.ID)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"authEnabled":   true,
+			"authenticated": true,
+			"user":          user,
+		})
+		return
+	}
 	if !s.auth.VerifyPassword(req.Password) {
 		writeError(w, http.StatusUnauthorized, "INVALID_PASSWORD", "invalid panel password")
 		return
 	}
-	s.auth.IssueSession(w)
+	s.auth.IssueSessionFor(w, "admin")
+	user, _ := s.store.GetAccessUser("admin")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authEnabled":   true,
 		"authenticated": true,
+		"user":          user,
 	})
 }
 
@@ -246,6 +278,59 @@ func (s *Server) handleUpdateAppearanceSettings(w http.ResponseWriter, r *http.R
 		return
 	}
 	settings, err := s.store.SetAppearanceSettings(req)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleAccessControlSettings(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.store.GetAccessControlSettings())
+}
+
+func (s *Server) handleUpdateAccessControlSettings(w http.ResponseWriter, r *http.Request) {
+	var req domain.AccessControlSettings
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+		return
+	}
+	settings, err := s.store.SetAccessControlSettings(req, actorFromRequest(r))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleSetAccessUserPassword(w http.ResponseWriter, r *http.Request) {
+	var req domain.AccessPasswordRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+		return
+	}
+	if strings.TrimSpace(req.UserID) == "" {
+		req.UserID = r.PathValue("id")
+	}
+	settings, err := s.store.SetAccessUserPassword(req.UserID, req.NewPassword, actorFromRequest(r))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleSecurityGuardrails(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.store.GetSecurityGuardrailSettings())
+}
+
+func (s *Server) handleUpdateSecurityGuardrails(w http.ResponseWriter, r *http.Request) {
+	var req domain.SecurityGuardrailSettings
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+		return
+	}
+	settings, err := s.store.SetSecurityGuardrailSettings(req, actorFromRequest(r))
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -638,6 +723,10 @@ func (s *Server) handlePublicIPBatchTask(w http.ResponseWriter, r *http.Request)
 			req.CompartmentID = cfg.TenancyOCID
 		}
 	}
+	if err := s.enforcePublicIPBatchGuardrails(req); err != nil {
+		writeError(w, http.StatusForbidden, "GUARDRAIL_BLOCKED", err.Error())
+		return
+	}
 	job, err := s.store.CreatePublicIPBatchTask(req, actorFromRequest(r))
 	if err != nil {
 		writeStoreError(w, err)
@@ -701,6 +790,10 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(req.CompartmentID) == "" {
 			req.CompartmentID = cfg.TenancyOCID
 		}
+		if err := s.enforceCreateInstanceGuardrails(req); err != nil {
+			writeError(w, http.StatusForbidden, "GUARDRAIL_BLOCKED", err.Error())
+			return
+		}
 		generatedRootPassword := ""
 		if req.GenerateRootPassword && strings.EqualFold(strings.TrimSpace(req.CompartmentID), strings.TrimSpace(cfg.TenancyOCID)) {
 			password, err := generateRootPassword()
@@ -737,6 +830,10 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.enforceCreateInstanceGuardrails(req); err != nil {
+		writeError(w, http.StatusForbidden, "GUARDRAIL_BLOCKED", err.Error())
+		return
+	}
 	result, err := s.store.CreateInstanceTask(req, actorFromRequest(r))
 	if err != nil {
 		writeStoreError(w, err)
@@ -760,6 +857,14 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 	var req domain.InstanceActionRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+		return
+	}
+	if err := s.authorizeInstanceAction(r, req); err != nil {
+		writeError(w, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
+		return
+	}
+	if err := s.enforceInstanceActionGuardrails(req); err != nil {
+		writeError(w, http.StatusForbidden, "GUARDRAIL_BLOCKED", err.Error())
 		return
 	}
 	if s.executionMode == "oci" {
@@ -819,10 +924,62 @@ func (s *Server) handleRebootInstance(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, job)
 }
 
+func (s *Server) handleInstanceReinstall(w http.ResponseWriter, r *http.Request) {
+	var req domain.InstanceReinstallRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+		return
+	}
+	if err := s.authorizeInstanceSystemSettings(r); err != nil {
+		writeError(w, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
+		return
+	}
+	if err := s.enforceInstanceReinstallGuardrails(req); err != nil {
+		writeError(w, http.StatusForbidden, "GUARDRAIL_BLOCKED", err.Error())
+		return
+	}
+	if s.executionMode != "oci" {
+		writeError(w, http.StatusConflict, "OCI_EXECUTION_REQUIRED", "重装系统必须在真实 OCI 执行模式下运行；local executor 不会冒充重装成功")
+		return
+	}
+	if req.GenerateRootPassword || strings.TrimSpace(req.CloudInit) != "" || strings.TrimSpace(req.SSHAuthorizedKey) != "" {
+		writeError(w, http.StatusBadRequest, "REINSTALL_PASSWORD_INJECTION_UNSUPPORTED", "OCI UpdateInstance 重装路径不能修改已启动实例的 user_data 或 ssh_authorized_keys，因此当前版本不支持重装时注入 root 密码、cloud-init 或 SSH key")
+		return
+	}
+
+	profileID, region, compartmentID := s.ociActionContext(r)
+	if strings.TrimSpace(req.ProfileID) != "" {
+		profileID = req.ProfileID
+	}
+	if strings.TrimSpace(req.Region) != "" {
+		region = req.Region
+	}
+	if strings.TrimSpace(req.CompartmentID) != "" {
+		compartmentID = req.CompartmentID
+	}
+	if _, _, err := s.resolveOCIConfig(profileID, region); err != nil {
+		writeError(w, http.StatusBadRequest, "OCI_PROFILE_RESOLVE_FAILED", err.Error())
+		return
+	}
+
+	job, err := s.store.CreateOCIInstanceReinstallTask(r.PathValue("id"), req, actorFromRequest(r), profileID, region, compartmentID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	lifecyclenotify.SendReinstallNotification(r.Context(), s.store, lifecyclenotify.ReinstallRequested, job, nil)
+	s.enqueue(job.ID)
+	writeJSON(w, http.StatusAccepted, sanitizeJob(job))
+}
+
 func (s *Server) handleCreateIPTask(w http.ResponseWriter, r *http.Request) {
 	var req domain.IPTaskRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+		return
+	}
+	if err := s.enforceIPGuardrails(req); err != nil {
+		writeError(w, http.StatusForbidden, "GUARDRAIL_BLOCKED", err.Error())
 		return
 	}
 	if s.executionMode == "oci" {
@@ -853,6 +1010,22 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": jobs,
+	})
+}
+
+func (s *Server) handleClearCompletedJobs(w http.ResponseWriter, r *http.Request) {
+	deletedCount, err := s.store.ClearCompletedJobs(actorFromRequest(r))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	jobs := s.store.ListJobs()
+	for i := range jobs {
+		jobs[i] = sanitizeJob(jobs[i])
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deletedCount": deletedCount,
+		"items":        jobs,
 	})
 }
 
@@ -908,6 +1081,14 @@ func (s *Server) handleReadNotification(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, notification)
 }
 
+func (s *Server) handleDeleteNotification(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DeleteNotification(r.PathValue("id")); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleReadAllNotifications(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": s.store.MarkAllNotificationsRead(),
@@ -917,13 +1098,17 @@ func (s *Server) handleReadAllNotifications(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	filter := domain.AuditLogFilter{
-		Actor:        query.Get("actor"),
-		Action:       query.Get("action"),
-		ResourceType: query.Get("resourceType"),
-		ResourceID:   query.Get("resourceId"),
-		ProfileID:    query.Get("profileId"),
-		Status:       query.Get("status"),
-		Limit:        parsePositiveInt(query.Get("limit")),
+		Actor:            query.Get("actor"),
+		Action:           query.Get("action"),
+		ResourceType:     query.Get("resourceType"),
+		ResourceID:       query.Get("resourceId"),
+		ProfileID:        query.Get("profileId"),
+		Region:           query.Get("region"),
+		CompartmentID:    query.Get("compartmentId"),
+		OCIRequestID:     query.Get("ociRequestId"),
+		OCIWorkRequestID: query.Get("ociWorkRequestId"),
+		Status:           query.Get("status"),
+		Limit:            parsePositiveInt(query.Get("limit")),
 	}
 	items, err := s.store.ListAuditLogs(filter)
 	if err != nil {
@@ -1076,6 +1261,10 @@ func (s *Server) handleCreateAutomationTask(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
 		return
 	}
+	if err := s.enforceAutomationGuardrails(req); err != nil {
+		writeError(w, http.StatusForbidden, "GUARDRAIL_BLOCKED", err.Error())
+		return
+	}
 
 	result, err := s.store.CreateAutomationTask(req, actorFromRequest(r))
 	if err != nil {
@@ -1084,6 +1273,157 @@ func (s *Server) handleCreateAutomationTask(w http.ResponseWriter, r *http.Reque
 	}
 	s.enqueue(result.Job.ID)
 	writeJSON(w, http.StatusCreated, result)
+}
+
+func (s *Server) enforceCreateInstanceGuardrails(req domain.CreateInstanceRequest) error {
+	settings := s.store.GetSecurityGuardrailSettings()
+	if !settings.Enabled {
+		return nil
+	}
+	if err := guardrailRegionAllowed(settings, req.Region); err != nil {
+		return err
+	}
+	if settings.RequireTemplateForLaunch && strings.TrimSpace(req.TemplateID) == "" {
+		return fmt.Errorf("安全护栏阻止创建：必须基于模板创建实例")
+	}
+	if settings.MaxOCPUsPerInstance > 0 && req.OCPUs > settings.MaxOCPUsPerInstance {
+		return fmt.Errorf("安全护栏阻止创建：OCPU %d 超过上限 %d", req.OCPUs, settings.MaxOCPUsPerInstance)
+	}
+	if settings.MaxMemoryGBPerInstance > 0 && req.MemoryGB > settings.MaxMemoryGBPerInstance {
+		return fmt.Errorf("安全护栏阻止创建：内存 %dGB 超过上限 %dGB", req.MemoryGB, settings.MaxMemoryGBPerInstance)
+	}
+	if settings.MaxBootVolumeGB > 0 && req.BootVolumeGB > settings.MaxBootVolumeGB {
+		return fmt.Errorf("安全护栏阻止创建：启动盘 %dGB 超过上限 %dGB", req.BootVolumeGB, settings.MaxBootVolumeGB)
+	}
+	if settings.MaxRetryAttempts > 0 && req.RetryMaxAttempts > settings.MaxRetryAttempts {
+		return fmt.Errorf("安全护栏阻止创建：重试次数 %d 超过上限 %d", req.RetryMaxAttempts, settings.MaxRetryAttempts)
+	}
+	if settings.BlockRootPasswordWithoutEmail && req.GenerateRootPassword && !req.NotifyRootPassword {
+		return fmt.Errorf("安全护栏阻止创建：生成 root 密码时必须启用通知")
+	}
+	return nil
+}
+
+func (s *Server) enforceInstanceActionGuardrails(req domain.InstanceActionRequest) error {
+	settings := s.store.GetSecurityGuardrailSettings()
+	if !settings.Enabled {
+		return nil
+	}
+	if req.Action == domain.InstanceActionTerminate {
+		if settings.RequireApprovalForTerminate && !req.SnapshotBefore {
+			return fmt.Errorf("安全护栏阻止终止：需要先勾选快照/审批确认")
+		}
+		if settings.BlockBootVolumeDeletion && !req.PreserveBootVolume {
+			return fmt.Errorf("安全护栏阻止终止：当前策略禁止删除启动盘")
+		}
+	}
+	if req.Action == domain.InstanceActionResize {
+		if settings.MaxOCPUsPerInstance > 0 && req.TargetOCPUs > settings.MaxOCPUsPerInstance {
+			return fmt.Errorf("安全护栏阻止升降级：目标 OCPU %d 超过上限 %d", req.TargetOCPUs, settings.MaxOCPUsPerInstance)
+		}
+		if settings.MaxMemoryGBPerInstance > 0 && req.TargetMemoryGB > settings.MaxMemoryGBPerInstance {
+			return fmt.Errorf("安全护栏阻止升降级：目标内存 %dGB 超过上限 %dGB", req.TargetMemoryGB, settings.MaxMemoryGBPerInstance)
+		}
+		if settings.MaxBootVolumeGB > 0 && req.TargetBootVolumeGB > settings.MaxBootVolumeGB {
+			return fmt.Errorf("安全护栏阻止升降级：目标启动盘 %dGB 超过上限 %dGB", req.TargetBootVolumeGB, settings.MaxBootVolumeGB)
+		}
+	}
+	return nil
+}
+
+func (s *Server) enforceInstanceReinstallGuardrails(req domain.InstanceReinstallRequest) error {
+	settings := s.store.GetSecurityGuardrailSettings()
+	if !settings.Enabled {
+		return nil
+	}
+	if err := guardrailRegionAllowed(settings, req.Region); err != nil {
+		return err
+	}
+	if settings.MaxBootVolumeGB > 0 && req.BootVolumeSizeGB > settings.MaxBootVolumeGB {
+		return fmt.Errorf("安全护栏阻止重装：目标启动盘 %dGB 超过上限 %dGB", req.BootVolumeSizeGB, settings.MaxBootVolumeGB)
+	}
+	if settings.BlockRootPasswordWithoutEmail && req.GenerateRootPassword && !req.NotifyPasswordInApp && !req.NotifyPasswordByEmail {
+		return fmt.Errorf("安全护栏阻止重装：生成 root 密码时必须启用通知")
+	}
+	return nil
+}
+
+func (s *Server) enforceIPGuardrails(req domain.IPTaskRequest) error {
+	settings := s.store.GetSecurityGuardrailSettings()
+	if !settings.Enabled {
+		return nil
+	}
+	mode := strings.ToLower(strings.TrimSpace(req.NetworkChangeMode))
+	if mode == "" {
+		mode = strings.ToLower(strings.TrimSpace(req.IPv6Strategy))
+	}
+	if settings.BlockPublicIPv6RouteChanges && (req.AutoConfigureIPv6 || req.AllowIrreversibleVCNIPv6 || mode == "replace_public_path" || mode == "clone_route_table" || mode == "additive") {
+		return fmt.Errorf("安全护栏阻止 IPv6 网络改造：当前策略禁止自动修改 VCN/Subnet/Route/Security")
+	}
+	return nil
+}
+
+func (s *Server) enforcePublicIPBatchGuardrails(req domain.PublicIPBatchTaskRequest) error {
+	settings := s.store.GetSecurityGuardrailSettings()
+	if !settings.Enabled {
+		return nil
+	}
+	if err := guardrailRegionAllowed(settings, req.Region); err != nil {
+		return err
+	}
+	count := req.Count
+	if strings.EqualFold(req.Action, "delete") {
+		count = len(req.PublicIPIDs)
+	}
+	if settings.MaxPublicIPBatchCount > 0 && count > settings.MaxPublicIPBatchCount {
+		return fmt.Errorf("安全护栏阻止批量公网 IP：数量 %d 超过上限 %d", count, settings.MaxPublicIPBatchCount)
+	}
+	return nil
+}
+
+func (s *Server) enforceAutomationGuardrails(req domain.AutomationTaskRequest) error {
+	settings := s.store.GetSecurityGuardrailSettings()
+	if !settings.Enabled {
+		return nil
+	}
+	if settings.MaxRetryAttempts > 0 && req.MaxRetries > settings.MaxRetryAttempts {
+		return fmt.Errorf("安全护栏阻止自动化：重试次数 %d 超过上限 %d", req.MaxRetries, settings.MaxRetryAttempts)
+	}
+	return nil
+}
+
+func guardrailRegionAllowed(settings domain.SecurityGuardrailSettings, region string) error {
+	region = strings.TrimSpace(region)
+	for _, denied := range settings.DeniedRegions {
+		if strings.EqualFold(denied, region) {
+			return fmt.Errorf("安全护栏阻止操作：区域 %s 已被禁止", region)
+		}
+	}
+	if len(settings.AllowedRegions) == 0 || region == "" {
+		return nil
+	}
+	for _, allowed := range settings.AllowedRegions {
+		if strings.EqualFold(allowed, region) {
+			return nil
+		}
+	}
+	return fmt.Errorf("安全护栏阻止操作：区域 %s 不在允许列表", region)
+}
+
+func (s *Server) authorizeInstanceAction(r *http.Request, req domain.InstanceActionRequest) error {
+	permission := "instance:operate"
+	if req.Action == domain.InstanceActionTerminate || req.Action == domain.InstanceActionResize {
+		permission = "instance:write"
+	}
+	userID, _ := s.currentUserID(r)
+	profileID, region, compartmentID := s.ociActionContext(r)
+	return s.store.Authorize(userID, permission, profileID, region, compartmentID)
+}
+
+func (s *Server) authorizeInstanceSystemSettings(r *http.Request) error {
+	userID, _ := s.currentUserID(r)
+	profileID, region, compartmentID := s.ociActionContext(r)
+	return s.store.Authorize(userID, "instance:write", profileID, region, compartmentID)
 }
 
 func decodeJSON(r *http.Request, out any) error {
@@ -1195,11 +1535,10 @@ func writeError(w http.ResponseWriter, status int, code string, message string) 
 }
 
 func actorFromRequest(r *http.Request) string {
-	actor := strings.TrimSpace(r.Header.Get("X-Actor"))
-	if actor == "" {
-		return "admin"
+	if value, ok := r.Context().Value(requestUserContextKey{}).(string); ok && strings.TrimSpace(value) != "" {
+		return value
 	}
-	return actor
+	return "admin"
 }
 
 func parsePositiveInt(value string) int {
@@ -1295,12 +1634,101 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if !s.auth.IsAuthenticated(r) {
+		userID, ok := s.auth.Subject(r)
+		if !ok {
 			writeError(w, http.StatusUnauthorized, "AUTH_REQUIRED", "panel login required")
 			return
 		}
-		next.ServeHTTP(w, r)
+		permission, profileID, region, compartmentID := s.permissionContext(r)
+		if permission != "" {
+			if err := s.store.Authorize(userID, permission, profileID, region, compartmentID); err != nil {
+				writeError(w, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
+				return
+			}
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestUserContextKey{}, userID)))
 	})
+}
+
+func (s *Server) currentUserID(r *http.Request) (string, bool) {
+	if value, ok := r.Context().Value(requestUserContextKey{}).(string); ok && strings.TrimSpace(value) != "" {
+		return value, true
+	}
+	if s.auth == nil {
+		return "admin", true
+	}
+	return s.auth.Subject(r)
+}
+
+func (s *Server) permissionContext(r *http.Request) (string, string, string, string) {
+	path := r.URL.Path
+	method := r.Method
+	profileID, region, compartmentID := s.ociActionContext(r)
+	switch {
+	case path == "/api/auth/me", path == "/api/account":
+		return "", profileID, region, compartmentID
+	case strings.HasPrefix(path, "/api/access-control"):
+		if method == http.MethodGet {
+			return "user:read", profileID, region, compartmentID
+		}
+		return "user:write", profileID, region, compartmentID
+	case strings.HasPrefix(path, "/api/security/guardrails"):
+		if method == http.MethodGet {
+			return "guardrail:read", profileID, region, compartmentID
+		}
+		return "guardrail:write", profileID, region, compartmentID
+	case strings.HasPrefix(path, "/api/audit-logs"):
+		return "audit:read", profileID, region, compartmentID
+	case strings.HasPrefix(path, "/api/profiles"):
+		if method == http.MethodGet {
+			return "profile:read", profileID, region, compartmentID
+		}
+		return "profile:write", profileID, region, compartmentID
+	case strings.HasPrefix(path, "/api/templates"):
+		if method == http.MethodGet {
+			return "template:read", profileID, region, compartmentID
+		}
+		return "template:write", profileID, region, compartmentID
+	case strings.HasPrefix(path, "/api/instances"):
+		if method == http.MethodGet {
+			return "instance:read", profileID, region, compartmentID
+		}
+		if strings.Contains(path, "/actions") || strings.Contains(path, "/reboot") {
+			return "instance:operate", profileID, region, compartmentID
+		}
+		return "instance:write", profileID, region, compartmentID
+	case strings.HasPrefix(path, "/api/network"):
+		if method == http.MethodGet {
+			return "network:read", profileID, region, compartmentID
+		}
+		return "network:write", profileID, region, compartmentID
+	case strings.HasPrefix(path, "/api/jobs"):
+		if method == http.MethodGet {
+			return "job:read", profileID, region, compartmentID
+		}
+		return "job:write", profileID, region, compartmentID
+	case strings.HasPrefix(path, "/api/notifications"):
+		if method == http.MethodGet {
+			return "notification:read", profileID, region, compartmentID
+		}
+		return "notification:write", profileID, region, compartmentID
+	case strings.HasPrefix(path, "/api/email"), strings.HasPrefix(path, "/api/webhook"), strings.HasPrefix(path, "/api/settings"), strings.HasPrefix(path, "/api/account/password"):
+		return "settings:write", profileID, region, compartmentID
+	case strings.HasPrefix(path, "/api/budget"):
+		if method == http.MethodGet {
+			return "budget:read", profileID, region, compartmentID
+		}
+		return "budget:write", profileID, region, compartmentID
+	case strings.HasPrefix(path, "/api/automations"):
+		if method == http.MethodGet {
+			return "automation:read", profileID, region, compartmentID
+		}
+		return "automation:write", profileID, region, compartmentID
+	case strings.HasPrefix(path, "/api/oci/"):
+		return "settings:write", profileID, region, compartmentID
+	default:
+		return "", profileID, region, compartmentID
+	}
 }
 
 func isPublicAPIPath(path string) bool {

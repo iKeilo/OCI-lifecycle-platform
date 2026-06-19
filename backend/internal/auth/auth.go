@@ -112,11 +112,20 @@ func (m *Manager) SetPasswordHash(hash string) {
 }
 
 func (m *Manager) IssueSession(w http.ResponseWriter) {
+	m.IssueSessionFor(w, "admin")
+}
+
+func (m *Manager) IssueSessionFor(w http.ResponseWriter, subject string) {
 	if !m.Enabled() {
 		return
 	}
+	subject = sanitizeSubject(subject)
+	if subject == "" {
+		subject = "admin"
+	}
 	expires := time.Now().UTC().Add(m.ttl).Unix()
-	value := fmt.Sprintf("%d.%s", expires, m.sign(strconv.FormatInt(expires, 10)))
+	payload := fmt.Sprintf("%d.%s", expires, subject)
+	value := fmt.Sprintf("%s.%s", payload, m.sign(payload))
 	http.SetCookie(w, &http.Cookie{
 		Name:     m.cookieName,
 		Value:    value,
@@ -145,23 +154,47 @@ func (m *Manager) ClearSession(w http.ResponseWriter) {
 }
 
 func (m *Manager) IsAuthenticated(r *http.Request) bool {
+	_, ok := m.Subject(r)
+	return ok
+}
+
+func (m *Manager) Subject(r *http.Request) (string, bool) {
 	if !m.Enabled() {
-		return true
+		return "admin", true
 	}
 	cookie, err := r.Cookie(m.cookieName)
 	if err != nil {
-		return false
+		return "", false
 	}
 	parts := strings.Split(cookie.Value, ".")
-	if len(parts) != 2 {
-		return false
+	if len(parts) == 2 {
+		expires, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil || time.Now().UTC().Unix() > expires {
+			return "", false
+		}
+		expected := m.sign(parts[0])
+		if !hmac.Equal([]byte(expected), []byte(parts[1])) {
+			return "", false
+		}
+		return "admin", true
+	}
+	if len(parts) != 3 {
+		return "", false
 	}
 	expires, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil || time.Now().UTC().Unix() > expires {
-		return false
+		return "", false
 	}
-	expected := m.sign(parts[0])
-	return hmac.Equal([]byte(expected), []byte(parts[1]))
+	payload := parts[0] + "." + parts[1]
+	expected := m.sign(payload)
+	if !hmac.Equal([]byte(expected), []byte(parts[2])) {
+		return "", false
+	}
+	subject := sanitizeSubject(parts[1])
+	if subject == "" {
+		return "", false
+	}
+	return subject, true
 }
 
 func (m *Manager) sign(value string) string {
@@ -176,4 +209,18 @@ func randomSecret() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func sanitizeSubject(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "\\", "-")
+	value = strings.ReplaceAll(value, "/", "-")
+	value = strings.ReplaceAll(value, "..", "-")
+	var out strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' || r == '@' {
+			out.WriteRune(r)
+		}
+	}
+	return strings.Trim(out.String(), ".-_")
 }

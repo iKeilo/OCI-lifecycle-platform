@@ -1,5 +1,37 @@
 # Real OCI Validation Log
 
+## 2026-06-19 FreeX86Test 系统设置真实验证
+
+测试环境：`http://10.0.0.142:34033` Docker 部署，`OCI_EXECUTION_MODE=oci`，通过测试服务器内已保存的 `profile-default` 执行真实 OCI SDK 调用。
+
+测试对象：用户指定的既有实例 `FreeX86Test`。本次只操作该实例，未触碰账号内其它实例。
+
+已验证：
+
+- 历史版本中 `POST /api/instances/{id}/system/password-reset` 曾按预期返回 `501 PASSWORD_RESET_PATH_UNVERIFIED`。该端点现已从产品和 API 中移除。
+- `POST /api/instances/{id}/system/reinstall` 使用兼容 Ubuntu 镜像提交真实 `UpdateInstance SourceDetails` 重装任务，OCI 返回 Work Request，任务最终 `SUCCESS`。
+- 重装链路补齐并验证了启动盘 attachment 等待、启动盘 hydration 等待，以及 Blockstorage `GetBootVolume` 瞬时网络错误重试。
+- 重装后实例仍保持 `Running`，公网 IPv4 和公网 IPv6 均保留，实例 Shape 仍为 `VM.Standard.E2.1.Micro`。
+- 重装后启动盘性能被 OCI 重置为 `10 VPUs/GB`，随后通过实例升降级接口提交只调整启动盘性能的真实任务，恢复到 `110 VPUs/GB`，任务最终 `SUCCESS`。
+
+本次发现并修复：
+
+- 固定规格实例只调整启动盘容量/性能时，执行器不应调用 `UpdateInstance`。旧逻辑会对 `VM.Standard.E2.1.Micro -> VM.Standard.E2.1.Micro` 发起无意义规格更新，OCI 返回 `OCI_UPDATE_INSTANCE_FAILED / InvalidParameter`。
+- 修复后 `executeResize` 会先判断 Shape / ShapeConfig 是否真的变化；如果没有变化，则跳过 Compute `UpdateInstance`，直接执行 Block Volume `UpdateBootVolume`。
+
+最终状态：
+
+- `FreeX86Test`：`Running`
+- Shape：`VM.Standard.E2.1.Micro`
+- 启动盘：`50 GB`
+- 启动盘性能：`110 VPUs/GB`
+- IPv6：已启用并可在实例列表显示
+
+产品边界：
+
+- 已有实例重置密码功能已移除，后续不规划 Agent / Run Command 或离线救援盘自动重置密码。
+- 重装时注入 root 密码、cloud-init 或 SSH key 不作为平台能力。当前 OCI SDK 路径不支持修改已启动实例的 `user_data` / `ssh_authorized_keys`，所以产品必须继续拒绝该请求。
+
 ## 2026-06-10 IPv6 网络编排专项补充验证
 
 测试环境：`http://10.0.0.142:24320` Docker 部署，`OCI_EXECUTION_MODE=oci`，通过 Web 保存的 `profile-default-2` 执行真实 OCI SDK 调用。

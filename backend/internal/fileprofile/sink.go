@@ -273,6 +273,42 @@ func (s *Sink) GetAppearanceSettings() (domain.AppearanceSettings, error) {
 	return settings, nil
 }
 
+func (s *Sink) SaveBudgetSettings(settings domain.BudgetSettings) error {
+	return s.saveSetting("budget", settings)
+}
+
+func (s *Sink) GetBudgetSettings() (domain.BudgetSettings, error) {
+	var settings domain.BudgetSettings
+	if err := s.getSetting("budget", &settings); err != nil {
+		return domain.BudgetSettings{}, err
+	}
+	return settings, nil
+}
+
+func (s *Sink) SaveAccessControlSettings(settings domain.AccessControlSettings) error {
+	return s.saveSetting("access", settings)
+}
+
+func (s *Sink) GetAccessControlSettings() (domain.AccessControlSettings, error) {
+	var settings domain.AccessControlSettings
+	if err := s.getSetting("access", &settings); err != nil {
+		return domain.AccessControlSettings{}, err
+	}
+	return settings, nil
+}
+
+func (s *Sink) SaveSecurityGuardrailSettings(settings domain.SecurityGuardrailSettings) error {
+	return s.saveSetting("guardrails", settings)
+}
+
+func (s *Sink) GetSecurityGuardrailSettings() (domain.SecurityGuardrailSettings, error) {
+	var settings domain.SecurityGuardrailSettings
+	if err := s.getSetting("guardrails", &settings); err != nil {
+		return domain.SecurityGuardrailSettings{}, err
+	}
+	return settings, nil
+}
+
 func (s *Sink) saveSetting(key string, value any) error {
 	if s == nil {
 		return store.ErrNotFound

@@ -881,11 +881,16 @@ kbd {
 }
 
 .metric-grid,
+.audit-summary-grid,
 .instance-grid,
 .card-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 24px;
+}
+
+.audit-summary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .card-grid.two {
@@ -921,6 +926,31 @@ kbd {
 
 .metric-card.yellow::after {
   background: rgba(255, 243, 181, 0.84);
+}
+
+.audit-filter-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.audit-table-wrap td {
+  vertical-align: top;
+}
+
+.audit-detail-panel {
+  scroll-margin-top: 24px;
+}
+
+.muted-cell {
+  color: var(--muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.mono-cell {
+  max-width: 220px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  word-break: break-all;
 }
 
 .metric-topline,
@@ -1905,6 +1935,13 @@ kbd {
 .notification-meta {
   flex-wrap: wrap;
   margin-top: 12px;
+}
+
+.notification-actions {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  justify-items: center;
 }
 
 .sensitive-chip,
@@ -3041,11 +3078,13 @@ td {
   }
 
   .metric-grid,
+  .audit-summary-grid,
   .instance-grid,
   .card-grid.two,
   .guardrail-grid,
   .modal-summary-card,
-  .choice-grid {
+  .choice-grid,
+  .audit-filter-grid {
     grid-template-columns: 1fr;
   }
 

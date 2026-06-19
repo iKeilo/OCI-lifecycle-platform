@@ -753,6 +753,12 @@ docker_ensure_env_defaults() {
   [[ -n "$(docker_env_get OCI_KEY_DIR)" ]] || docker_env_set OCI_KEY_DIR "$DOCKER_KEY_DIR"
   [[ -n "$(docker_env_get PROFILE_DATA_VOLUME)" ]] || docker_env_set PROFILE_DATA_VOLUME "$APP_NAME-profile-data"
   [[ -n "$(docker_env_get POSTGRES_DATA_VOLUME)" ]] || docker_env_set POSTGRES_DATA_VOLUME "$APP_NAME-postgres-data"
+  [[ -n "$(docker_env_get POSTGRES_DB)" ]] || docker_env_set POSTGRES_DB "oci_lifecycle"
+  [[ -n "$(docker_env_get POSTGRES_USER)" ]] || docker_env_set POSTGRES_USER "oci_lifecycle"
+  [[ -n "$(docker_env_get POSTGRES_PASSWORD)" ]] || docker_env_set POSTGRES_PASSWORD "$(openssl rand -hex 24)"
+  if [[ -z "$(docker_env_get DATABASE_URL)" ]]; then
+    docker_env_set DATABASE_URL "postgres://$(docker_env_get POSTGRES_USER):$(docker_env_get POSTGRES_PASSWORD)@postgres:5432/$(docker_env_get POSTGRES_DB)?sslmode=disable"
+  fi
   [[ -n "$(docker_env_get PANEL_SESSION_SECRET)" ]] || docker_env_set PANEL_SESSION_SECRET "$(openssl rand -hex 32)"
   [[ -n "$(docker_env_get PROFILE_KEY_ENCRYPTION_KEY)" ]] || docker_env_set PROFILE_KEY_ENCRYPTION_KEY "$(openssl rand -base64 32 | tr -d '\n')"
   if [[ -n "${OCI_EXECUTION_MODE:-}" ]]; then

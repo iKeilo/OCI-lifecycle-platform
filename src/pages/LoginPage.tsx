@@ -7,6 +7,7 @@ type LoginPageProps = {
 };
 
 export function LoginPage({ onAuthenticated }: LoginPageProps) {
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
@@ -16,7 +17,7 @@ export function LoginPage({ onAuthenticated }: LoginPageProps) {
     setIsSubmitting(true);
     setErrorMessage("");
     try {
-      await login(password);
+      await login(password, username);
       onAuthenticated();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "登录失败");
@@ -38,6 +39,19 @@ export function LoginPage({ onAuthenticated }: LoginPageProps) {
         </div>
 
         <form className="auth-form" onSubmit={handleSubmit}>
+          <label>
+            用户名
+            <div className="auth-input">
+              <ShieldCheck size={18} />
+              <input
+                autoComplete="username"
+                onChange={(event) => setUsername(event.target.value)}
+                placeholder="可选；留空则使用面板密码"
+                type="text"
+                value={username}
+              />
+            </div>
+          </label>
           <label>
             面板密码
             <div className="auth-input">

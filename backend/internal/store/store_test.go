@@ -9,13 +9,18 @@ import (
 type fakeSink struct {
 	profiles           []domain.Profile
 	jobs               []domain.Job
+	deletedJobs        []string
 	instances          []domain.Instance
 	audits             []domain.AuditLog
+	notifications      []domain.Notification
+	deletedNotices     []string
 	emailSettings      domain.EmailSettings
 	webhookSettings    domain.WebhookSettings
 	accountSettings    domain.AccountSettings
 	appearanceSettings domain.AppearanceSettings
 	budgetSettings     domain.BudgetSettings
+	accessSettings     domain.AccessControlSettings
+	guardrailSettings  domain.SecurityGuardrailSettings
 }
 
 func (s *fakeSink) SaveProfile(profile domain.Profile, secret domain.ProfileSecret) error {
@@ -28,6 +33,11 @@ func (s *fakeSink) SaveJob(job domain.Job) error {
 	return nil
 }
 
+func (s *fakeSink) DeleteJobs(jobIDs []string) error {
+	s.deletedJobs = append(s.deletedJobs, jobIDs...)
+	return nil
+}
+
 func (s *fakeSink) SaveInstance(instance domain.Instance) error {
 	s.instances = append(s.instances, instance)
 	return nil
@@ -36,6 +46,32 @@ func (s *fakeSink) SaveInstance(instance domain.Instance) error {
 func (s *fakeSink) RecordAudit(entry domain.AuditLog) error {
 	s.audits = append(s.audits, entry)
 	return nil
+}
+
+func (s *fakeSink) SaveNotification(notification domain.Notification) error {
+	for index, existing := range s.notifications {
+		if existing.ID == notification.ID {
+			s.notifications[index] = notification
+			return nil
+		}
+	}
+	s.notifications = append(s.notifications, notification)
+	return nil
+}
+
+func (s *fakeSink) DeleteNotification(notificationID string) error {
+	s.deletedNotices = append(s.deletedNotices, notificationID)
+	for index, existing := range s.notifications {
+		if existing.ID == notificationID {
+			s.notifications = append(s.notifications[:index], s.notifications[index+1:]...)
+			return nil
+		}
+	}
+	return nil
+}
+
+func (s *fakeSink) ListNotifications() ([]domain.Notification, error) {
+	return append([]domain.Notification(nil), s.notifications...), nil
 }
 
 func (s *fakeSink) SaveEmailSettings(settings domain.EmailSettings) error {
@@ -81,6 +117,24 @@ func (s *fakeSink) SaveBudgetSettings(settings domain.BudgetSettings) error {
 
 func (s *fakeSink) GetBudgetSettings() (domain.BudgetSettings, error) {
 	return s.budgetSettings, nil
+}
+
+func (s *fakeSink) SaveAccessControlSettings(settings domain.AccessControlSettings) error {
+	s.accessSettings = settings
+	return nil
+}
+
+func (s *fakeSink) GetAccessControlSettings() (domain.AccessControlSettings, error) {
+	return s.accessSettings, nil
+}
+
+func (s *fakeSink) SaveSecurityGuardrailSettings(settings domain.SecurityGuardrailSettings) error {
+	s.guardrailSettings = settings
+	return nil
+}
+
+func (s *fakeSink) GetSecurityGuardrailSettings() (domain.SecurityGuardrailSettings, error) {
+	return s.guardrailSettings, nil
 }
 
 func TestCompleteStopJobUpdatesInstanceStatus(t *testing.T) {
@@ -189,6 +243,40 @@ func TestCreateOCIInstanceActionTaskDoesNotRequireLocalInstance(t *testing.T) {
 	}
 	if updated.OCIRequestID != "request-1" || updated.OCIWorkRequestID != "work-1" {
 		t.Fatalf("expected OCI refs to be persisted, got %#v", updated)
+	}
+}
+
+func TestCreateOCIInstanceReinstallTaskRecordsSafeInput(t *testing.T) {
+	s := NewSeeded()
+	instanceID := "ocid1.instance.oc1.ap-chuncheon-1.example"
+	job, err := s.CreateOCIInstanceReinstallTask(instanceID, domain.InstanceReinstallRequest{
+		ImageID:               "ocid1.image.oc1.ap-chuncheon-1.example",
+		ImageName:             "Oracle-Linux-9",
+		BootVolumeSizeGB:      60,
+		BootVolumeVPUsPerGB:   20,
+		PreserveOldBootVolume: true,
+		ConfirmationName:      "not-required-for-uncached-oci-instance",
+	}, "tester", "DEFAULT", "ap-chuncheon-1", "ocid1.tenancy.oc1..example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Type != "重装系统" || job.ResourceID != instanceID || job.Input["operation"] != "reinstall" {
+		t.Fatalf("unexpected reinstall job: %#v", job)
+	}
+	if job.Input["generateRootPassword"] != false || job.Input["cloudInitSensitive"] != false {
+		t.Fatalf("reinstall job must not claim password injection support: %#v", job.Input)
+	}
+}
+
+func TestCreateOCIInstanceReinstallTaskRejectsPasswordInjection(t *testing.T) {
+	s := NewSeeded()
+	_, err := s.CreateOCIInstanceReinstallTask("ocid1.instance.oc1.ap-chuncheon-1.example", domain.InstanceReinstallRequest{
+		ImageID:              "ocid1.image.oc1.ap-chuncheon-1.example",
+		BootVolumeSizeGB:     50,
+		GenerateRootPassword: true,
+	}, "tester", "DEFAULT", "ap-chuncheon-1", "ocid1.tenancy.oc1..example")
+	if err == nil {
+		t.Fatal("expected password injection to be rejected")
 	}
 }
 
@@ -628,5 +716,168 @@ func TestLoadPersistedSettingsRestoresEmailForSend(t *testing.T) {
 	forAPI := reloaded.GetEmailSettings()
 	if forAPI.Password != "" || !forAPI.PasswordSet {
 		t.Fatalf("expected API settings to remain redacted, got %#v", forAPI)
+	}
+}
+
+func TestListAuditLogsFiltersExtendedFields(t *testing.T) {
+	s := New()
+	s.ReplaceAuditLogs([]domain.AuditLog{
+		{
+			ID:               1,
+			Actor:            "admin",
+			Action:           "instance.launch",
+			ResourceType:     "instance",
+			ResourceID:       "inst-a",
+			ProfileID:        "profile-a",
+			Region:           "ap-chuncheon-1",
+			CompartmentID:    "compartment-a",
+			OCIRequestID:     "request-a",
+			OCIWorkRequestID: "work-a",
+		},
+		{
+			ID:               2,
+			Actor:            "admin",
+			Action:           "instance.terminate",
+			ResourceType:     "instance",
+			ResourceID:       "inst-b",
+			ProfileID:        "profile-b",
+			Region:           "us-ashburn-1",
+			CompartmentID:    "compartment-b",
+			OCIRequestID:     "request-b",
+			OCIWorkRequestID: "work-b",
+			ErrorCode:        "Conflict",
+			ErrorMessage:     "instance is busy",
+		},
+	})
+
+	logs, err := s.ListAuditLogs(domain.AuditLogFilter{
+		Region:           "ashburn",
+		CompartmentID:    "compartment-b",
+		OCIRequestID:     "request-b",
+		OCIWorkRequestID: "work-b",
+		Status:           "failed",
+		Limit:            10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 || logs[0].ID != 2 {
+		t.Fatalf("expected extended audit filter to return failed ashburn entry, got %#v", logs)
+	}
+}
+
+func TestClearCompletedJobsPersistsDeleteAndKeepsRunnableJobs(t *testing.T) {
+	sink := &fakeSink{}
+	s := New()
+	s.SetPersistenceSink(sink)
+	s.ReplaceJobs([]domain.Job{
+		{ID: "JOB-success", Status: domain.JobSuccess, CreatedBy: "tester"},
+		{ID: "JOB-failed", Status: domain.JobFailed, CreatedBy: "tester"},
+		{ID: "JOB-cancelled", Status: domain.JobCancelled, CreatedBy: "tester"},
+		{ID: "JOB-manual", Status: domain.JobManualNeeded, CreatedBy: "tester"},
+		{ID: "JOB-pending", Status: domain.JobPending, CreatedBy: "tester"},
+		{ID: "JOB-running", Status: domain.JobRunning, CreatedBy: "tester"},
+		{ID: "JOB-waiting", Status: domain.JobWaitingOCI, CreatedBy: "tester"},
+		{ID: "JOB-retrying", Status: domain.JobRetrying, CreatedBy: "tester"},
+	})
+
+	deleted, err := s.ClearCompletedJobs("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 4 {
+		t.Fatalf("expected 4 completed jobs to be deleted, got %d", deleted)
+	}
+	if len(sink.deletedJobs) != 4 {
+		t.Fatalf("expected persisted job deletes, got %#v", sink.deletedJobs)
+	}
+	remaining := s.ListJobs()
+	remainingIDs := map[string]bool{}
+	for _, job := range remaining {
+		remainingIDs[job.ID] = true
+	}
+	for _, id := range []string{"JOB-pending", "JOB-running", "JOB-waiting", "JOB-retrying"} {
+		if !remainingIDs[id] {
+			t.Fatalf("expected runnable job %s to remain, remaining=%#v", id, remainingIDs)
+		}
+	}
+	for _, id := range []string{"JOB-success", "JOB-failed", "JOB-cancelled", "JOB-manual"} {
+		if remainingIDs[id] {
+			t.Fatalf("expected completed job %s to be removed, remaining=%#v", id, remainingIDs)
+		}
+	}
+	if len(sink.audits) != 1 || sink.audits[0].Action != "jobs.clear_completed" {
+		t.Fatalf("expected clear completed audit record, got %#v", sink.audits)
+	}
+}
+
+func TestAccessControlSanitizesUserIDsAndScopesPermissions(t *testing.T) {
+	s := New()
+	settings, err := s.SetAccessControlSettings(domain.AccessControlSettings{
+		Users: []domain.AccessUser{
+			{
+				ID:                  "../Audit/User",
+				DisplayName:         "Audit User",
+				RoleID:              "auditor",
+				Status:              "active",
+				AllowedRegions:      []string{"ap-chuncheon-1"},
+				AllowedCompartments: []string{"ocid1.compartment.oc1..allowed"},
+			},
+		},
+	}, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Users[0].ID != "audit-user" {
+		t.Fatalf("expected path-like user id to be sanitized, got %#v", settings.Users[0].ID)
+	}
+	if err := s.Authorize("audit-user", "audit:read", "", "ap-chuncheon-1", "ocid1.compartment.oc1..allowed"); err != nil {
+		t.Fatalf("expected auditor read to pass: %v", err)
+	}
+	if err := s.Authorize("audit-user", "instance:write", "", "ap-chuncheon-1", "ocid1.compartment.oc1..allowed"); err == nil {
+		t.Fatal("expected auditor instance write to be denied")
+	}
+	if err := s.Authorize("audit-user", "audit:read", "", "us-ashburn-1", "ocid1.compartment.oc1..allowed"); err == nil {
+		t.Fatal("expected region scope escape to be denied")
+	}
+}
+
+func TestNotificationsPersistStatusAndDelete(t *testing.T) {
+	sink := &fakeSink{}
+	s := New()
+	s.SetPersistenceSink(sink)
+	notification, err := s.CreateNotification(domain.NotificationRequest{
+		Title:          "root password generated",
+		Message:        "root password is available in secure notice",
+		Severity:       domain.NotificationWarning,
+		Category:       "credential",
+		ResourceType:   "instance",
+		ResourceID:     "inst-test",
+		EmailRequested: true,
+	}, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.notifications) != 1 || sink.notifications[0].ID != notification.ID {
+		t.Fatalf("expected notification persistence, got %#v", sink.notifications)
+	}
+	updated, err := s.UpdateNotificationEmailStatus(notification.ID, false, "smtp unavailable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.EmailRequested || updated.EmailSent || updated.EmailError != "smtp unavailable" {
+		t.Fatalf("unexpected updated notification: %#v", updated)
+	}
+	if sink.notifications[0].EmailError != "smtp unavailable" {
+		t.Fatalf("expected persisted email status, got %#v", sink.notifications[0])
+	}
+	if err := s.DeleteNotification(notification.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.deletedNotices) != 1 || sink.deletedNotices[0] != notification.ID {
+		t.Fatalf("expected delete persistence, got %#v", sink.deletedNotices)
+	}
+	if len(sink.notifications) != 0 {
+		t.Fatalf("expected notification removed from persistence, got %#v", sink.notifications)
 	}
 }

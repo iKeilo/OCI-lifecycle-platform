@@ -8,13 +8,13 @@ import { BudgetManagementPage } from "../pages/BudgetManagementPage";
 import { CreateInstancePage } from "../pages/CreateInstancePage";
 import { DashboardPage } from "../pages/DashboardPage";
 import { EmailPage } from "../pages/EmailPage";
+import { GuardrailsPage } from "../pages/GuardrailsPage";
 import { InstancesPage } from "../pages/InstancesPage";
 import { JobsPage } from "../pages/JobsPage";
 import { LoginPage } from "../pages/LoginPage";
 import { MonitoringPage } from "../pages/MonitoringPage";
 import { NetworkPage } from "../pages/NetworkPage";
 import { NotificationsPage } from "../pages/NotificationsPage";
-import { PlaceholderPage } from "../pages/PlaceholderPage";
 import { ProfilesPage } from "../pages/ProfilesPage";
 import { SettingsPage } from "../pages/SettingsPage";
 import { TemplateEditorPage } from "../pages/TemplateEditorPage";
@@ -93,7 +93,7 @@ export function App() {
         <Route path="/audit" element={<AuditPage />} />
         <Route path="/users" element={<UsersPage />} />
         <Route path="/email" element={<EmailPage />} />
-        <Route path="/guardrails" element={<PlaceholderPage title="安全护栏" subtitle="自动化、预算、区域和危险操作的全局限制将在这里配置。" />} />
+        <Route path="/guardrails" element={<GuardrailsPage />} />
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

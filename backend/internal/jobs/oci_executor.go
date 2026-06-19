@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"a-series-oracle/backend/internal/domain"
+	"a-series-oracle/backend/internal/lifecyclenotify"
 	"a-series-oracle/backend/internal/oci"
 	"a-series-oracle/backend/internal/store"
 )
@@ -79,6 +80,8 @@ func (e *OCIExecutor) Execute(ctx context.Context, jobID string) error {
 			return e.executeLaunchJob(ctx, cfg, job)
 		} else if operation == "ip-management" {
 			return e.executeIPManagementJob(ctx, cfg, job)
+		} else if operation == "reinstall" {
+			return e.executeReinstallJob(ctx, cfg, job)
 		}
 		return e.executeInstanceJob(ctx, cfg, job)
 	}
@@ -217,6 +220,61 @@ func (e *OCIExecutor) executeIPManagementJob(ctx context.Context, cfg oci.Readin
 	if _, err := e.store.CompleteJob(job.ID, payload); err != nil {
 		return ignoreConflict(err)
 	}
+	return nil
+}
+
+func (e *OCIExecutor) executeReinstallJob(ctx context.Context, cfg oci.ReadinessConfig, job domain.Job) error {
+	instanceID, _ := job.Input["ociInstanceId"].(string)
+	if instanceID == "" {
+		instanceID = job.ResourceID
+	}
+	result := oci.ExecuteInstanceReinstall(ctx, cfg, oci.InstanceReinstallExecutionRequest{
+		InstanceID:             instanceID,
+		ImageID:                stringFromInput(job.Input["imageId"]),
+		ImageName:              stringFromInput(job.Input["imageName"]),
+		BootVolumeSizeGB:       intFromInput(job.Input["bootVolumeSizeGb"]),
+		BootVolumeVPUsPerGB:    intFromInput(job.Input["bootVolumeVpusPerGb"]),
+		PreserveOldBootVolume:  boolFromInput(job.Input["preserveOldBootVolume"]),
+		CreateBootVolumeBackup: boolFromInput(job.Input["createBootVolumeBackup"]),
+		JobID:                  job.ID,
+	})
+	if _, err := e.store.SetJobOCIRefs(job.ID, result.RequestID, result.WorkRequestID); err != nil {
+		return err
+	}
+	if _, err := e.store.MarkJobWaitingOCI(job.ID); err != nil {
+		return ignoreConflict(err)
+	}
+	if _, err := e.store.MarkJobVerifying(job.ID); err != nil {
+		return ignoreConflict(err)
+	}
+
+	if !result.Verified {
+		payload, _ := structToMap(result)
+		failed, err := e.store.FailJob(job.ID, result.ErrorCode, result.ErrorMessage)
+		if err != nil {
+			return err
+		}
+		lifecyclenotify.SendReinstallNotification(ctx, e.store, lifecyclenotify.ReinstallFailed, failed, payload)
+		return errors.New(result.ErrorCode + ": " + result.ErrorMessage)
+	}
+
+	payload, err := structToMap(result)
+	if err != nil {
+		failed, failErr := e.store.FailJob(job.ID, "OCI_RESULT_ENCODE_FAILED", err.Error())
+		if failErr != nil {
+			return failErr
+		}
+		lifecyclenotify.SendReinstallNotification(ctx, e.store, lifecyclenotify.ReinstallFailed, failed, map[string]any{
+			"errorCode":    "OCI_RESULT_ENCODE_FAILED",
+			"errorMessage": err.Error(),
+		})
+		return err
+	}
+	completed, err := e.store.CompleteJob(job.ID, payload)
+	if err != nil {
+		return ignoreConflict(err)
+	}
+	lifecyclenotify.SendReinstallNotification(ctx, e.store, lifecyclenotify.ReinstallSucceeded, completed, payload)
 	return nil
 }
 

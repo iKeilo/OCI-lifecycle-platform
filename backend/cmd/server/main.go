@@ -88,6 +88,30 @@ func main() {
 			os.Exit(1)
 		}
 		appStore.ReplaceTemplates(templates)
+		notifications, err := persistence.ListNotifications()
+		if err != nil {
+			slog.Error("database notification load failed", "error", err)
+			os.Exit(1)
+		}
+		appStore.ReplaceNotifications(notifications)
+		if cfg.Security.ProfileStoreFile != "" {
+			if err := migrateFileStoreToDatabase(cfg.Security.ProfileStoreFile, persistence, cfg.Security.ProfileKeyEncryptionKey, len(profiles) == 0, len(templates) == 0); err != nil {
+				slog.Error("file store database migration failed", "error", err)
+				os.Exit(1)
+			}
+			profiles, err = persistence.ListProfiles()
+			if err != nil {
+				slog.Error("database profile reload failed", "error", err)
+				os.Exit(1)
+			}
+			appStore.ReplaceProfiles(profiles)
+			templates, err = persistence.ListTemplates()
+			if err != nil {
+				slog.Error("database template reload failed", "error", err)
+				os.Exit(1)
+			}
+			appStore.ReplaceTemplates(templates)
+		}
 		appStore.SetPersistenceSink(persistence)
 		if err := appStore.LoadPersistedSettings(); err != nil {
 			slog.Error("database settings load failed", "error", err)
@@ -215,6 +239,128 @@ func withStaticFiles(apiHandler http.Handler, staticDir string) http.Handler {
 		}
 		http.ServeFile(w, r, indexPath)
 	})
+}
+
+func migrateFileStoreToDatabase(path string, persistence *db.PostgresSink, secret string, migrateProfiles bool, migrateTemplates bool) error {
+	path = strings.TrimSpace(path)
+	if path == "" || persistence == nil {
+		return nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	source, err := fileprofile.New(path)
+	if err != nil {
+		return err
+	}
+	if err := source.SetProfileKeyEncryptionKey(secret); err != nil {
+		return err
+	}
+	if migrateProfiles {
+		profiles, err := source.ListProfiles()
+		if err != nil {
+			return err
+		}
+		for _, profile := range profiles {
+			profileSecret, err := source.GetProfileSecret(profile.ID)
+			if err != nil {
+				return err
+			}
+			if err := persistence.SaveProfile(profile, profileSecret); err != nil {
+				return err
+			}
+		}
+	}
+	if migrateTemplates {
+		templates, err := source.ListTemplates()
+		if err != nil {
+			return err
+		}
+		for _, template := range templates {
+			if err := persistence.SaveTemplate(template); err != nil {
+				return err
+			}
+		}
+	}
+	if exists, err := persistence.HasSetting("email"); err != nil {
+		return err
+	} else if !exists {
+		if settings, err := source.GetEmailSettings(); err != nil {
+			return err
+		} else if emailSettingsConfigured(settings) {
+			if err := persistence.SaveEmailSettings(settings); err != nil {
+				return err
+			}
+		}
+	}
+	if exists, err := persistence.HasSetting("webhook"); err != nil {
+		return err
+	} else if !exists {
+		if settings, err := source.GetWebhookSettings(); err != nil {
+			return err
+		} else if webhookSettingsConfigured(settings) {
+			if err := persistence.SaveWebhookSettings(settings); err != nil {
+				return err
+			}
+		}
+	}
+	if exists, err := persistence.HasSetting("account"); err != nil {
+		return err
+	} else if !exists {
+		if settings, err := source.GetAccountSettings(); err != nil {
+			return err
+		} else if accountSettingsConfigured(settings) {
+			if err := persistence.SaveAccountSettings(settings); err != nil {
+				return err
+			}
+		}
+	}
+	if exists, err := persistence.HasSetting("appearance"); err != nil {
+		return err
+	} else if !exists {
+		if settings, err := source.GetAppearanceSettings(); err != nil {
+			return err
+		} else if appearanceSettingsConfigured(settings) {
+			if err := persistence.SaveAppearanceSettings(settings); err != nil {
+				return err
+			}
+		}
+	}
+	if exists, err := persistence.HasSetting("budget"); err != nil {
+		return err
+	} else if !exists {
+		if settings, err := source.GetBudgetSettings(); err != nil {
+			return err
+		} else if budgetSettingsConfigured(settings) {
+			if err := persistence.SaveBudgetSettings(settings); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func emailSettingsConfigured(settings domain.EmailSettings) bool {
+	return settings.Host != "" || settings.Enabled || settings.PasswordSet || settings.Password != "" || len(settings.To) > 0
+}
+
+func webhookSettingsConfigured(settings domain.WebhookSettings) bool {
+	return settings.URL != "" || settings.Enabled || settings.SecretSet || settings.Secret != ""
+}
+
+func accountSettingsConfigured(settings domain.AccountSettings) bool {
+	return settings.DisplayName != "" || settings.Email != "" || settings.Avatar != "" || settings.PasswordSet || settings.PasswordHash != ""
+}
+
+func appearanceSettingsConfigured(settings domain.AppearanceSettings) bool {
+	return settings.Theme != "" || settings.Language != "" || settings.BackgroundMode != "" || settings.BackgroundImage != ""
+}
+
+func budgetSettingsConfigured(settings domain.BudgetSettings) bool {
+	return settings.MonthlyBudgetUSD > 0 || settings.Enabled || settings.ScopeMode != "" || len(settings.ManualInstanceIDs) > 0
 }
 
 func envProfile(cfg config.Config) domain.Profile {
