@@ -610,7 +610,7 @@ type AccessUser struct {
 	AllowedProfiles     []string  `json:"allowedProfiles"`
 	AllowedRegions      []string  `json:"allowedRegions"`
 	AllowedCompartments []string  `json:"allowedCompartments"`
-	PasswordHash        string    `json:"-"`
+	PasswordHash        string    `json:"passwordHash,omitempty"`
 	PasswordSet         bool      `json:"passwordSet"`
 	LastLoginAt         time.Time `json:"lastLoginAt,omitempty"`
 	UpdatedAt           time.Time `json:"updatedAt,omitempty"`

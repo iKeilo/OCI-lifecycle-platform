@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"testing"
 
 	"a-series-oracle/backend/internal/domain"
@@ -839,6 +840,54 @@ func TestAccessControlSanitizesUserIDsAndScopesPermissions(t *testing.T) {
 	}
 	if err := s.Authorize("audit-user", "audit:read", "", "us-ashburn-1", "ocid1.compartment.oc1..allowed"); err == nil {
 		t.Fatal("expected region scope escape to be denied")
+	}
+}
+
+func TestAccessUserPasswordPersistsWithoutExposure(t *testing.T) {
+	sink := &fakeSink{}
+	s := New()
+	s.SetPersistenceSink(sink)
+
+	settings, err := s.SetAccessUserPassword("admin", "secret-password", "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.Users) == 0 || !settings.Users[0].PasswordSet || settings.Users[0].PasswordHash != "" {
+		t.Fatalf("expected redacted password state, got %#v", settings.Users)
+	}
+	if len(sink.accessSettings.Users) == 0 || strings.TrimSpace(sink.accessSettings.Users[0].PasswordHash) == "" {
+		t.Fatalf("expected persisted password hash, got %#v", sink.accessSettings.Users)
+	}
+
+	reloaded := New()
+	reloaded.SetPersistenceSink(sink)
+	if err := reloaded.LoadPersistedSettings(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reloaded.VerifyAccessUser("admin", "secret-password"); !ok {
+		t.Fatal("expected persisted admin password to verify after reload")
+	}
+
+	injected, err := reloaded.SetAccessControlSettings(domain.AccessControlSettings{
+		Users: []domain.AccessUser{{
+			ID:           "admin",
+			DisplayName:  "Administrator",
+			RoleID:       "super_admin",
+			Status:       "active",
+			PasswordHash: "attacker-controlled-hash",
+		}},
+	}, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if injected.Users[0].PasswordHash != "" {
+		t.Fatalf("expected access settings response to remain redacted, got %#v", injected.Users[0])
+	}
+	if _, ok := reloaded.VerifyAccessUser("admin", "secret-password"); !ok {
+		t.Fatal("expected existing password hash to survive access settings update")
+	}
+	if _, ok := reloaded.VerifyAccessUser("admin", "attacker-controlled-hash"); ok {
+		t.Fatal("access settings update must not accept caller supplied passwordHash")
 	}
 }
 

@@ -1220,9 +1220,7 @@ func (s *Store) SetAccessControlSettings(settings domain.AccessControlSettings, 
 	}
 	next := normalizeAccessControlSettings(settings, s.now().UTC())
 	for index := range next.Users {
-		if strings.TrimSpace(next.Users[index].PasswordHash) == "" {
-			next.Users[index].PasswordHash = currentPasswords[next.Users[index].ID]
-		}
+		next.Users[index].PasswordHash = currentPasswords[next.Users[index].ID]
 		next.Users[index].PasswordSet = strings.TrimSpace(next.Users[index].PasswordHash) != ""
 	}
 	next.UpdatedAt = s.now().UTC()
@@ -3760,6 +3758,9 @@ func normalizeSecurityGuardrails(settings domain.SecurityGuardrailSettings, now 
 }
 
 func redactAccessSettings(settings domain.AccessControlSettings) domain.AccessControlSettings {
+	users := make([]domain.AccessUser, len(settings.Users))
+	copy(users, settings.Users)
+	settings.Users = users
 	for index := range settings.Users {
 		settings.Users[index] = redactAccessUser(settings.Users[index])
 	}
