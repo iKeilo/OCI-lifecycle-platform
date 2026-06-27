@@ -220,6 +220,45 @@ func TestCreateResizeTaskRejectsBootVolumeShrink(t *testing.T) {
 	}
 }
 
+func TestTerminateActionDefaultsToDeleteBootVolume(t *testing.T) {
+	s := NewSeeded()
+	job, err := s.CreateInstanceActionTask("inst-prod-web-01", domain.InstanceActionRequest{
+		Action:         domain.InstanceActionTerminate,
+		Graceful:       true,
+		SnapshotBefore: true,
+	}, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preserve, ok := job.Input["preserveBootVolume"].(bool); !ok || preserve {
+		t.Fatalf("expected terminate to delete boot volume by default, got %#v", job.Input["preserveBootVolume"])
+	}
+
+	instance, ok := s.GetInstance("inst-prod-web-01")
+	if !ok {
+		t.Fatal("expected instance")
+	}
+	if instance.Status != domain.InstanceTerminating {
+		t.Fatalf("expected terminating instance, got %s", instance.Status)
+	}
+}
+
+func TestTerminateActionCanExplicitlyPreserveBootVolume(t *testing.T) {
+	s := NewSeeded()
+	job, err := s.CreateInstanceActionTask("inst-prod-web-01", domain.InstanceActionRequest{
+		Action:             domain.InstanceActionTerminate,
+		Graceful:           true,
+		PreserveBootVolume: true,
+		SnapshotBefore:     true,
+	}, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preserve, ok := job.Input["preserveBootVolume"].(bool); !ok || !preserve {
+		t.Fatalf("expected explicit preserve boot volume to be honored, got %#v", job.Input["preserveBootVolume"])
+	}
+}
+
 func TestCreateOCIInstanceActionTaskDoesNotRequireLocalInstance(t *testing.T) {
 	s := NewSeeded()
 	instanceID := "ocid1.instance.oc1.ap-chuncheon-1.example"
@@ -244,6 +283,39 @@ func TestCreateOCIInstanceActionTaskDoesNotRequireLocalInstance(t *testing.T) {
 	}
 	if updated.OCIRequestID != "request-1" || updated.OCIWorkRequestID != "work-1" {
 		t.Fatalf("expected OCI refs to be persisted, got %#v", updated)
+	}
+}
+
+func TestOCITerminateActionDefaultsToDeleteBootVolume(t *testing.T) {
+	s := NewSeeded()
+	instanceID := "ocid1.instance.oc1.ap-chuncheon-1.example"
+	job, err := s.CreateOCIInstanceActionTask(instanceID, domain.InstanceActionRequest{
+		Action:         domain.InstanceActionTerminate,
+		Graceful:       true,
+		SnapshotBefore: true,
+	}, "tester", "DEFAULT", "ap-chuncheon-1", "ocid1.tenancy.oc1..example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preserve, ok := job.Input["preserveBootVolume"].(bool); !ok || preserve {
+		t.Fatalf("expected OCI terminate to delete boot volume by default, got %#v", job.Input["preserveBootVolume"])
+	}
+}
+
+func TestOCITerminateActionCanExplicitlyPreserveBootVolume(t *testing.T) {
+	s := NewSeeded()
+	instanceID := "ocid1.instance.oc1.ap-chuncheon-1.example"
+	job, err := s.CreateOCIInstanceActionTask(instanceID, domain.InstanceActionRequest{
+		Action:             domain.InstanceActionTerminate,
+		Graceful:           true,
+		PreserveBootVolume: true,
+		SnapshotBefore:     true,
+	}, "tester", "DEFAULT", "ap-chuncheon-1", "ocid1.tenancy.oc1..example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preserve, ok := job.Input["preserveBootVolume"].(bool); !ok || !preserve {
+		t.Fatalf("expected explicit OCI preserve boot volume to be honored, got %#v", job.Input["preserveBootVolume"])
 	}
 }
 

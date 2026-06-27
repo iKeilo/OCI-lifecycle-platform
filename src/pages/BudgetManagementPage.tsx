@@ -41,7 +41,7 @@ const defaultPolicy: BudgetPolicyState = {
   manualInstanceIds: "",
   actionMode: "downgrade",
   downgradePreset: "free-first",
-  deleteBootVolume: false,
+  deleteBootVolume: true,
   requireApproval: true
 };
 
@@ -59,7 +59,7 @@ const actionModes = [
   {
     id: "delete",
     title: "超出预算即删机",
-    description: "只处理明确纳入范围并允许自动删除的实例，默认保留启动卷。"
+    description: "只处理明确纳入范围并允许自动删除的实例，默认删除启动卷。"
   }
 ] as const;
 
@@ -75,7 +75,7 @@ const guardrails = [
   "预算熔断默认只通知；自动降配和自动删机必须显式启用。",
   "只处理带有 budget.autoAction=enabled 或被策略范围选中的机器。",
   "受保护实例、平台关键实例、最近创建冷却期内实例永远跳过。",
-  "删除实例默认 preserveBootVolume=true；删除启动卷需要单独开关。",
+  "删除实例默认 preserveBootVolume=false，会同时删除启动卷；如需恢复或取数必须显式选择保留。",
   "每次执行都有最大实例数、最大 OCPU、最大月预算、最大每日执行次数。",
   "自动降配前必须做兼容性检查：镜像、架构、Shape、AD、容量、服务限制。",
   "删机或大规模降配建议强制审批；紧急熔断模式才允许自动执行。"
@@ -455,8 +455,8 @@ export function BudgetManagementPage() {
           </div>
           <div className="switch-row">
             <div>
-              <strong>允许同时删除启动卷</strong>
-              <p>默认关闭。开启后才允许在终止实例时删除 boot volume。</p>
+              <strong>终止时删除启动卷</strong>
+              <p>默认开启。关闭后才会在终止实例时保留 boot volume。</p>
             </div>
             <button className={`toggle-switch ${policy.deleteBootVolume ? "on" : ""}`} onClick={() => update("deleteBootVolume", !policy.deleteBootVolume)} />
           </div>
@@ -678,7 +678,7 @@ function policyFromSettings(settings: BudgetSettings): BudgetPolicyState {
     manualInstanceIds: (settings.manualInstanceIds ?? []).join("\n"),
     actionMode: settings.actionMode || defaultPolicy.actionMode,
     downgradePreset: settings.downgradePreset || defaultPolicy.downgradePreset,
-    deleteBootVolume: Boolean(settings.deleteBootVolume),
+    deleteBootVolume: settings.deleteBootVolume !== false,
     requireApproval: settings.requireApproval !== false
   };
 }

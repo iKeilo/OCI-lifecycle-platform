@@ -3687,7 +3687,7 @@ func defaultSecurityGuardrails(now time.Time) domain.SecurityGuardrailSettings {
 		MaxRetryAttempts:              20,
 		MaxPublicIPBatchCount:         10,
 		RequireApprovalForTerminate:   true,
-		BlockBootVolumeDeletion:       true,
+		BlockBootVolumeDeletion:       false,
 		BlockPublicIPv6RouteChanges:   false,
 		BlockRootPasswordWithoutEmail: true,
 		RequireTemplateForLaunch:      false,

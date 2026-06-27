@@ -368,10 +368,10 @@ dry-run 结果必须返回：
 
 终止策略：
 
-- 默认 `preserveBootVolume=true`。
+- 默认 `preserveBootVolume=false`。
 - 默认不释放保留公网 IP。
-- 默认不删除启动卷。
-- 删除启动卷必须单独开关，并在审批中显示不可恢复风险。
+- 默认删除启动卷，避免终止实例后继续产生孤儿磁盘费用。
+- 保留启动卷必须显式开关；删除启动卷仍需在审批中显示不可恢复风险。
 
 任务流：
 
@@ -469,7 +469,7 @@ PUT /api/budget/settings
 
 - 接审批流。
 - 支持按候选列表终止实例。
-- 默认保留启动卷。
+- 默认删除启动卷。
 - 增加失败恢复、人工介入状态、审计导出。
 
 ## 12. 测试计划
@@ -487,7 +487,7 @@ PUT /api/budget/settings
 - Dry-run 不创建 OCI Job。
 - 超预算只通知模式只生成通知。
 - 降配模式生成 `RESIZE` Job。
-- 删机模式生成 `TERMINATE` Job，但默认 preserve boot volume。
+- 删机模式生成 `TERMINATE` Job，默认删除 boot volume；需要保留时必须显式设置 preserveBootVolume。
 - 审计日志记录完整 request/result payload。
 
 真实 OCI 验证：
@@ -497,7 +497,7 @@ PUT /api/budget/settings
 - 同步 Actual/Forecast 字段。
 - 创建测试实例，触发 dry-run 候选。
 - 在人工确认后验证降配。
-- 删机测试只允许测试实例，且默认保留启动卷。
+- 删机测试只允许测试实例，且默认删除启动卷。
 
 ## 13. 当前未落地清单
 

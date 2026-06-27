@@ -103,7 +103,7 @@ export function InstancesPage() {
       const job = await createInstanceAction(instance.id, {
         action,
         graceful: true,
-        preserveBootVolume: true,
+        preserveBootVolume: false,
         targetShape: "",
         targetOcpus: 0,
         targetMemoryGb: 0,
@@ -367,7 +367,7 @@ function ConfirmActionModal({
   onClose: () => void;
   onConfirm: (preserveBootVolume: boolean) => Promise<boolean>;
 }) {
-  const [preserveBootVolume, setPreserveBootVolume] = useState(true);
+  const [deleteBootVolume, setDeleteBootVolume] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const label = labelOverride || actionLabel(action);
   const isDanger = action === "TERMINATE";
@@ -375,7 +375,7 @@ function ConfirmActionModal({
   async function handleConfirm() {
     if (isSubmitting) return;
     setIsSubmitting(true);
-    const succeeded = await onConfirm(preserveBootVolume);
+    const succeeded = await onConfirm(!deleteBootVolume);
     if (!succeeded) {
       setIsSubmitting(false);
     }
@@ -392,10 +392,14 @@ function ConfirmActionModal({
         {isDanger ? (
           <div className="switch-row">
             <div>
-              <strong>保留启动盘</strong>
-              <p>关闭后代表终止实例并删除启动盘，属于高风险操作。</p>
+              <strong>删除启动盘</strong>
+              <p>默认开启，终止实例时同时删除启动盘，避免产生孤儿磁盘费用。关闭后会保留启动盘用于人工恢复或取数。</p>
             </div>
-            <button className={`toggle-switch ${preserveBootVolume ? "on" : ""}`} onClick={() => setPreserveBootVolume((value) => !value)} />
+            <button
+              aria-label="终止实例时删除启动盘"
+              className={`toggle-switch ${deleteBootVolume ? "on" : ""}`}
+              onClick={() => setDeleteBootVolume((value) => !value)}
+            />
           </div>
         ) : null}
         <button className="primary-button full" disabled={isSubmitting} onClick={() => void handleConfirm()}>

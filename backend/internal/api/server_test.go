@@ -465,6 +465,47 @@ func TestCreateInstanceAction(t *testing.T) {
 	}
 }
 
+func TestCreateTerminateActionDefaultsToDeleteBootVolume(t *testing.T) {
+	ts := newTestServer()
+	res := postJSON(t, ts, "/api/instances/inst-prod-web-01/actions", map[string]any{
+		"action":         "TERMINATE",
+		"graceful":       true,
+		"snapshotBefore": true,
+	})
+
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", res.Code, res.Body.String())
+	}
+	var body struct {
+		Input map[string]any `json:"input"`
+	}
+	decodeTestJSON(t, res.Body.Bytes(), &body)
+	if preserve, ok := body.Input["preserveBootVolume"].(bool); !ok || preserve {
+		t.Fatalf("expected terminate API to delete boot volume by default, got %#v", body.Input["preserveBootVolume"])
+	}
+}
+
+func TestCreateTerminateActionCanExplicitlyPreserveBootVolume(t *testing.T) {
+	ts := newTestServer()
+	res := postJSON(t, ts, "/api/instances/inst-prod-web-01/actions", map[string]any{
+		"action":             "TERMINATE",
+		"graceful":           true,
+		"preserveBootVolume": true,
+		"snapshotBefore":     true,
+	})
+
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", res.Code, res.Body.String())
+	}
+	var body struct {
+		Input map[string]any `json:"input"`
+	}
+	decodeTestJSON(t, res.Body.Bytes(), &body)
+	if preserve, ok := body.Input["preserveBootVolume"].(bool); !ok || !preserve {
+		t.Fatalf("expected explicit preserveBootVolume to be honored, got %#v", body.Input["preserveBootVolume"])
+	}
+}
+
 func TestCreateOCIInstanceActionUsesOCIDResource(t *testing.T) {
 	queued := ""
 	server := NewServerWithOptions(store.NewSeeded(), ServerOptions{
