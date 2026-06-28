@@ -1,5 +1,7 @@
 import {
   ArrowUpDown,
+  Download,
+  FileUp,
   Globe2,
   Grid2X2,
   HardDrive,
@@ -19,13 +21,14 @@ import {
   Zap
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { getSelectedOCIContext, onOCIContextChange } from "../app/ociContext";
 import { AsyncState } from "../components/AsyncState";
 import { PageHeader } from "../components/PageHeader";
 import { StatusPill } from "../components/StatusPill";
-import { createIPTask, createInstanceAction, createInstanceReinstallTask, getLaunchOptionsForContext, listInstances } from "../services/api";
-import type { Instance, InstanceActionPayload, LaunchOptions } from "../services/api";
+import { createFirewallTask, createIPTask, createInstanceAction, createInstanceReinstallTask, getFirewallRules, getLaunchOptionsForContext, listInstances } from "../services/api";
+import type { FirewallRule, FirewallRulesInventory, FirewallTaskPayload, Instance, InstanceActionPayload, LaunchOptions } from "../services/api";
 
 const statusFilters: Array<{ value: "All" | Instance["status"]; label: string }> = [
   { value: "All", label: "全部实例" },
@@ -63,6 +66,7 @@ export function InstancesPage() {
   const [actionMessage, setActionMessage] = useState("");
   const [actionError, setActionError] = useState("");
   const [selectedIpInstance, setSelectedIpInstance] = useState<Instance | null>(null);
+  const [firewallInstance, setFirewallInstance] = useState<Instance | null>(null);
   const [systemSettingsInstance, setSystemSettingsInstance] = useState<Instance | null>(null);
   const [pendingAction, setPendingAction] = useState<{
     instance: Instance;
@@ -255,6 +259,10 @@ export function InstancesPage() {
                     <Globe2 size={16} />
                     IP 管理
                   </button>
+                  <button className="secondary-button instance-firewall-button" onClick={() => setFirewallInstance(instance)} disabled={isTerminalStatus(instance.status)}>
+                    <ShieldAlert size={16} />
+                    防火墙
+                  </button>
                   {instance.status === "Stopped" ? (
                     <button className="secondary-button" onClick={() => setPendingAction({ instance, action: "START" })}>
                       <Zap size={16} />
@@ -300,6 +308,18 @@ export function InstancesPage() {
           onCreated={(jobId) => {
             setActionMessage(`已创建 IP 管理任务 ${jobId}，可在任务中心查看执行状态。`);
             setSelectedIpInstance(null);
+            void reloadInstances();
+          }}
+        />
+      ) : null}
+
+      {firewallInstance ? (
+        <FirewallManagementModal
+          instance={firewallInstance}
+          onClose={() => setFirewallInstance(null)}
+          onCreated={(jobId) => {
+            setActionMessage(`已创建防火墙任务 ${jobId}，可在任务中心查看执行状态。`);
+            setFirewallInstance(null);
             void reloadInstances();
           }}
         />
@@ -814,6 +834,633 @@ function ResizeBudgetCard({ budget }: { budget: ResizeBudgetEstimate }) {
         <span>免费额度判断</span>
         <strong>{budget.statusLabel}</strong>
         {budget.blockers.length > 0 ? <small>{budget.blockers.join("；")}</small> : <small>提升后的计算、容量和性能仍在免费边界内</small>}
+      </div>
+    </div>
+  );
+}
+
+const firewallQuickPorts = [
+  { label: "SSH", protocol: "tcp" as const, portMin: 22, portMax: 22 },
+  { label: "HTTP", protocol: "tcp" as const, portMin: 80, portMax: 80 },
+  { label: "HTTPS", protocol: "tcp" as const, portMin: 443, portMax: 443 },
+  { label: "RDP", protocol: "tcp" as const, portMin: 3389, portMax: 3389 }
+];
+
+function shortID(value: string) {
+  if (!value) return "-";
+  if (value.length <= 18) return value;
+  return `${value.slice(0, 10)}...${value.slice(-6)}`;
+}
+
+function parseFirewallPorts(value: string): Array<{ portMin: number; portMax: number }> {
+  const ranges: Array<{ portMin: number; portMax: number }> = [];
+  const parts = value.split(",").map((part) => part.trim()).filter(Boolean);
+  for (const part of parts) {
+    const [rawMin, rawMax] = part.split("-").map((item) => item.trim());
+    const portMin = Number(rawMin);
+    const portMax = rawMax ? Number(rawMax) : portMin;
+    if (!Number.isInteger(portMin) || !Number.isInteger(portMax) || portMin <= 0 || portMin > 65535 || portMax < portMin || portMax > 65535) {
+      throw new Error("端口格式不正确，请输入 80、80,88 或 90-99 这类格式。");
+    }
+    ranges.push({ portMin, portMax });
+  }
+  if (ranges.length === 0) {
+    throw new Error("请输入端口。");
+  }
+  return ranges;
+}
+
+type PendingFirewallChange = {
+  id: string;
+  label: string;
+  payload: FirewallTaskPayload;
+};
+
+function FirewallManagementModal({
+  instance,
+  onClose,
+  onCreated
+}: {
+  instance: Instance;
+  onClose: () => void;
+  onCreated: (jobId: string) => void;
+}) {
+  const context = getSelectedOCIContext();
+  const [inventory, setInventory] = useState<FirewallRulesInventory | null>(null);
+  const [isLoadingRules, setIsLoadingRules] = useState(true);
+  const [rulesError, setRulesError] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedRuleIds, setSelectedRuleIds] = useState<string[]>([]);
+  const [showRuleEditor, setShowRuleEditor] = useState(false);
+  const [firewallEnabled, setFirewallEnabled] = useState(true);
+  const [pingBlocked, setPingBlocked] = useState(false);
+  const [snapshotBefore, setSnapshotBefore] = useState(true);
+  const [protocol, setProtocol] = useState<FirewallTaskPayload["protocol"] | "tcp_udp">("tcp");
+  const [portExpression, setPortExpression] = useState("22");
+  const [sourceMode, setSourceMode] = useState("all");
+  const [customSourceCidr, setCustomSourceCidr] = useState("");
+  const [rulePolicy, setRulePolicy] = useState<FirewallTaskPayload["action"]>("open");
+  const [direction, setDirection] = useState("ingress");
+  const [targetScope, setTargetScope] = useState<FirewallTaskPayload["targetScope"]>("auto");
+  const [note, setNote] = useState("SSH 远程服务");
+  const [pendingChanges, setPendingChanges] = useState<PendingFirewallChange[]>([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+
+  const sourceCidr = sourceMode === "custom" ? customSourceCidr.trim() : "0.0.0.0/0";
+  const rules = inventory?.rules ?? [];
+  const broadRules = rules.filter((rule) => rule.isBroadRule);
+  const filteredRules = rules.filter((rule) => {
+    const target = `${rule.protocol} ${rule.portLabel} ${rule.source} ${rule.remark ?? ""} ${rule.containerType}`.toLowerCase();
+    return target.includes(searchTerm.trim().toLowerCase());
+  });
+  const selectedRules = rules.filter((rule) => selectedRuleIds.includes(rule.id));
+
+  const loadRules = useCallback(async () => {
+    setIsLoadingRules(true);
+    setRulesError("");
+    try {
+      const next = await getFirewallRules(instance.id, {
+        profileId: context.profileId,
+        region: context.region,
+        vnicId: "primary"
+      });
+      setInventory(next);
+      setFirewallEnabled(next.verified);
+    } catch (error) {
+      setRulesError(error instanceof Error ? error.message : "读取防火墙规则失败");
+    } finally {
+      setIsLoadingRules(false);
+    }
+  }, [context.profileId, context.region, instance.id]);
+
+  useEffect(() => {
+    void loadRules();
+  }, [loadRules]);
+
+  function applyQuickPort(option: (typeof firewallQuickPorts)[number]) {
+    setProtocol(option.protocol);
+    setPortExpression(option.portMin === option.portMax ? String(option.portMin) : `${option.portMin}-${option.portMax}`);
+    setNote(`${option.label} 服务`);
+    setShowRuleEditor(true);
+  }
+
+  function queueFirewallChange(label: string, payload: FirewallTaskPayload) {
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    setPendingChanges((current) => [...current, { id, label, payload }]);
+  }
+
+  function removePendingChange(id: string) {
+    setPendingChanges((current) => current.filter((change) => change.id !== id));
+  }
+
+  async function applyPendingChanges() {
+    if (isSubmitting || pendingChanges.length === 0) return;
+    setIsSubmitting(true);
+    setErrorMessage("");
+    try {
+      const jobIDs: string[] = [];
+      for (const change of pendingChanges) {
+        const job = await createFirewallTask(instance.id, change.payload);
+        jobIDs.push(job.id);
+      }
+      setPendingChanges([]);
+      onCreated(jobIDs.join(", "));
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "应用防火墙任务失败");
+      setIsSubmitting(false);
+    }
+  }
+
+  function submitPortRuleModal() {
+    if (direction !== "ingress") {
+      setErrorMessage("当前版本只支持 OCI 入站规则。出站规则需要单独设计，避免误断开实例访问。");
+      return;
+    }
+    let ranges: Array<{ portMin: number; portMax: number }>;
+    try {
+      ranges = parseFirewallPorts(portExpression);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "端口格式不正确。");
+      return;
+    }
+    const protocols: FirewallTaskPayload["protocol"][] = protocol === "tcp_udp" ? ["tcp", "udp"] : [protocol];
+    for (const currentProtocol of protocols) {
+      for (const range of ranges) {
+        const portLabel = range.portMin === range.portMax ? String(range.portMin) : `${range.portMin}-${range.portMax}`;
+        queueFirewallChange(`${rulePolicy === "open" ? "放行" : "不放行"} ${currentProtocol.toUpperCase()}/${portLabel}`, {
+          action: rulePolicy,
+          protocol: currentProtocol,
+          portMin: range.portMin,
+          portMax: range.portMax,
+          sourceCidr,
+          targetScope,
+          vnicId: "primary",
+          snapshotBefore,
+          note: protocols.length > 1 ? `${note || "端口规则"} / ${currentProtocol.toUpperCase()}` : note
+        });
+      }
+    }
+    setShowRuleEditor(false);
+    setErrorMessage("");
+  }
+  function editRule(rule: FirewallRule) {
+    if (rule.protocol !== "tcp" && rule.protocol !== "udp") return;
+    setProtocol(rule.protocol);
+    setPortExpression(rule.portMax && rule.portMax !== rule.portMin ? `${rule.portMin || 1}-${rule.portMax}` : String(rule.portMin || 1));
+    if (rule.source === "0.0.0.0/0" || rule.source === "-" || rule.source === "") {
+      setSourceMode("all");
+      setCustomSourceCidr("");
+    } else {
+      setSourceMode("custom");
+      setCustomSourceCidr(rule.source);
+    }
+    setTargetScope(rule.containerType === "nsg" ? "nsg" : "security_list");
+    setNote(rule.remark || "");
+    setRulePolicy("open");
+    setShowRuleEditor(true);
+  }
+
+  function deleteRule(rule: FirewallRule) {
+    if (rule.isBroadRule) {
+      if (!window.confirm("强制删除宽规则风险很高，可能立即中断 SSH、面板或业务访问。确认加入待应用列表？")) return;
+      queueFirewallChange(`强制删除宽规则 ${rule.protocol}/${rule.source}`, {
+        action: "delete_broad",
+        protocol: "tcp",
+        portMin: 1,
+        portMax: 1,
+        sourceCidr: rule.source === "-" ? "0.0.0.0/0" : rule.source,
+        targetScope: rule.containerType === "nsg" ? "nsg" : "security_list",
+        vnicId: "primary",
+        containerId: rule.containerId,
+        containerType: rule.containerType,
+        ruleId: rule.id,
+        snapshotBefore,
+        note: `强制删除宽规则：${rule.containerType}/${rule.source}`
+      });
+      setErrorMessage("");
+      return;
+    }
+    if (!rule.editable || (rule.protocol !== "tcp" && rule.protocol !== "udp")) {
+      setErrorMessage("该规则不是精确 TCP/UDP 端口规则，当前不会自动修改非端口规则。");
+      return;
+    }
+    queueFirewallChange(`?? ${rule.protocol}/${rule.portLabel}`, {
+      action: "close",
+      protocol: rule.protocol,
+      portMin: rule.portMin || 0,
+      portMax: rule.portMax || rule.portMin || 0,
+      sourceCidr: rule.source,
+      targetScope: rule.containerType === "nsg" ? "nsg" : "security_list",
+      vnicId: "primary",
+      snapshotBefore,
+      note: `删除防火墙规则：${rule.protocol}/${rule.portLabel}`
+    });
+    setErrorMessage("");
+  }
+
+  function bulkDeleteSelected() {
+    const candidates = selectedRules.filter((rule) => rule.isBroadRule || (rule.editable && (rule.protocol === "tcp" || rule.protocol === "udp")));
+    if (candidates.length === 0) {
+      setErrorMessage("请选择可以删除的精确端口规则或宽规则。");
+      return;
+    }
+    candidates.forEach((rule) => deleteRule(rule));
+  }
+  function toggleRuleSelection(ruleId: string, checked: boolean) {
+    setSelectedRuleIds((current) => checked ? Array.from(new Set([...current, ruleId])) : current.filter((id) => id !== ruleId));
+  }
+
+  function toggleAllVisible(checked: boolean) {
+    setSelectedRuleIds(checked ? filteredRules.map((rule) => rule.id) : []);
+  }
+
+  function exportRules() {
+    const blob = new Blob([JSON.stringify(inventory ?? { rules: [] }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${instance.name || instance.id}-firewall-rules.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="firewall-console glass-modal">
+        <div className="modal-header-row firewall-header">
+          <div className="modal-title-block">
+            <div className="modal-icon compact">
+              <ShieldAlert size={24} />
+            </div>
+            <div>
+              <h2>防火墙设置</h2>
+              <p>{instance.name} / {instance.primaryIp || instance.privateIp || "未分配 IP"} / {instance.region}</p>
+            </div>
+          </div>
+          <button className="icon-button bordered" aria-label="关闭防火墙设置" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="firewall-switchbar">
+          <div className="firewall-switch-item">
+            <span>防火墙开关</span>
+            <button className={`toggle-switch ${firewallEnabled ? "on" : ""}`} type="button" onClick={() => setFirewallEnabled((value) => !value)} />
+          </div>
+          <div className="firewall-switch-item">
+            <span>禁 ping</span>
+            <button className={`toggle-switch ${pingBlocked ? "on" : ""}`} type="button" onClick={() => setPingBlocked((value) => !value)} />
+          </div>
+          <div className="firewall-logline">
+            <span>规则来源：</span>
+            <strong>{inventory?.nsgIds?.length ? "NSG" : inventory?.securityListIds?.length ? "Security List" : "未加载"}</strong>
+            <span>{inventory?.loadedAt ? `最后读取 ${new Date(inventory.loadedAt).toLocaleString()}` : ""}</span>
+          </div>
+          <button className="secondary-button compact" type="button" disabled>清空日志</button>
+          <button className="secondary-button compact" type="button" disabled>清理缓存</button>
+        </div>
+
+        <div className="firewall-rule-summary">
+          <strong>端口规则：{rules.length}</strong>
+        </div>
+
+        {broadRules.length > 0 ? (
+          <div className="modal-warning firewall-warning">
+            <ShieldAlert size={18} />
+            <span>检测到 {broadRules.length} 条全部放行或宽规则。关闭单个端口不会真正关闭访问，需要先人工收窄宽规则。</span>
+          </div>
+        ) : null}
+        {!inventory?.verified && inventory?.errorMessage ? <div className="inline-error">{inventory.errorMessage}</div> : null}
+        {rulesError ? <div className="inline-error">{rulesError}</div> : null}
+        {errorMessage ? <div className="inline-error">{errorMessage}</div> : null}
+
+        <div className="firewall-toolbar">
+          <div className="button-row compact">
+            <button className="primary-button" type="button" onClick={() => setShowRuleEditor((value) => !value)}>添加端口规则</button>
+            <button className="secondary-button" type="button" disabled><FileUp size={15} /> 导入规则</button>
+            <button className="secondary-button" type="button" onClick={exportRules}><Download size={15} /> 导出规则</button>
+            <button className="secondary-button" type="button" disabled>端口防扫描</button>
+            <button className="secondary-button" type="button" onClick={() => void loadRules()} disabled={isLoadingRules}>
+              <RefreshCw size={15} /> {isLoadingRules ? "刷新中" : "刷新"}
+            </button>
+          </div>
+          <label className="search-input firewall-search">
+            <Search size={16} />
+            <input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="请输入端口/来源/备注" />
+          </label>
+        </div>
+
+        {showRuleEditor ? createPortal((
+          <div className="firewall-rule-dialog-backdrop">
+            <div className="firewall-rule-dialog" role="dialog" aria-modal="true">
+              <div className="firewall-rule-dialog-header">
+                <h3>添加端口规则</h3>
+                <button className="icon-button" type="button" aria-label="关闭添加端口规则" onClick={() => setShowRuleEditor(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="firewall-rule-form">
+                <label>
+                  <span>协议</span>
+                  <select value={protocol} onChange={(event) => setProtocol(event.target.value as FirewallTaskPayload["protocol"] | "tcp_udp")}>
+                    <option value="tcp">TCP</option>
+                    <option value="udp">UDP</option>
+                    <option value="tcp_udp">TCP/UDP</option>
+                  </select>
+                </label>
+                <label>
+                  <span><i>*</i> 端口</span>
+                  <input value={portExpression} onChange={(event) => setPortExpression(event.target.value)} placeholder="请输入端口" />
+                </label>
+                <label>
+                  <span>来源</span>
+                  <select value={sourceMode} onChange={(event) => setSourceMode(event.target.value)}>
+                    <option value="all">所有 IP</option>
+                    <option value="custom">指定 CIDR</option>
+                  </select>
+                </label>
+                {sourceMode === "custom" ? (
+                  <label>
+                    <span>CIDR</span>
+                    <input value={customSourceCidr} onChange={(event) => setCustomSourceCidr(event.target.value)} placeholder="例如 203.0.113.10/32 或 ::/0" />
+                  </label>
+                ) : null}
+                <label>
+                  <span>策略</span>
+                  <select value={rulePolicy} onChange={(event) => setRulePolicy(event.target.value as FirewallTaskPayload["action"])}>
+                    <option value="open">放行</option>
+                    <option value="close">不放行</option>
+                  </select>
+                </label>
+                <label>
+                  <span>方向</span>
+                  <select value={direction} onChange={(event) => setDirection(event.target.value)}>
+                    <option value="ingress">入站(默认)</option>
+                  </select>
+                </label>
+                <label>
+                  <span>备注</span>
+                  <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="请填写备注，可为空" />
+                </label>
+              </div>
+              <ul className="firewall-rule-help">
+                <li>支持添加多个端口，如：80,88</li>
+                <li>支持添加多个端口范围，如：80,88,90-99,110-120</li>
+                <li>“不放行”会删除完全匹配的 OCI 放行规则；宽规则需要先人工收窄。</li>
+                <li>该功能修改 OCI NSG / Security List，不会修改实例系统内防火墙。</li>
+              </ul>
+              <div className="firewall-rule-dialog-actions">
+                <button className="secondary-button" type="button" disabled={isSubmitting} onClick={() => setShowRuleEditor(false)}>取消</button>
+                <button className="primary-button" type="button" disabled={isSubmitting} onClick={() => void submitPortRuleModal()}>
+                  {isSubmitting ? "提交中..." : "确定"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ), document.body) : null}
+
+        <div className="table-wrap firewall-table-wrap">
+          <table className="network-table firewall-table">
+            <thead>
+              <tr>
+                <th><input type="checkbox" checked={filteredRules.length > 0 && filteredRules.every((rule) => selectedRuleIds.includes(rule.id))} onChange={(event) => toggleAllVisible(event.target.checked)} /></th>
+                <th>协议</th>
+                <th>端口</th>
+                <th>状态</th>
+                <th>策略</th>
+                <th>方向</th>
+                <th>来源</th>
+                <th>备注</th>
+                <th>时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {isLoadingRules ? (
+                <tr><td colSpan={10} className="empty-table-cell">正在读取 OCI 防火墙规则...</td></tr>
+              ) : filteredRules.length === 0 ? (
+                <tr><td colSpan={10} className="empty-table-cell">暂无可展示规则</td></tr>
+              ) : filteredRules.map((rule) => (
+                <tr key={rule.id} className={rule.isBroadRule ? "broad-rule-row" : ""}>
+                  <td><input type="checkbox" checked={selectedRuleIds.includes(rule.id)} onChange={(event) => toggleRuleSelection(rule.id, event.target.checked)} /></td>
+                  <td>{rule.protocol}</td>
+                  <td>{rule.portLabel}</td>
+                  <td>{rule.status}</td>
+                  <td className="success-text">{rule.policy}</td>
+                  <td>{rule.direction}</td>
+                  <td>{rule.source === "0.0.0.0/0" || rule.source === "::/0" ? "所有 IP" : rule.source}</td>
+                  <td>{rule.remark || `${rule.containerType === "nsg" ? "NSG" : "Security List"} / ${shortID(rule.containerId)}`}</td>
+                  <td>{rule.time || "--"}</td>
+                  <td>
+                    <div className="inline-actions">
+                      <button type="button" onClick={() => editRule(rule)} disabled={!rule.editable}>修改</button>
+                      <button type="button" onClick={() => deleteRule(rule)} disabled={isSubmitting}>删除</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {pendingChanges.length > 0 ? (
+          <div className="firewall-pending-panel">
+            <strong>待应用变更</strong>
+            <div>
+              {pendingChanges.map((change) => (
+                <span key={change.id}>
+                  {change.label}
+                  <button type="button" onClick={() => removePendingChange(change.id)}>移除</button>
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        <div className="firewall-footer">
+          <label>
+            <input type="checkbox" checked={selectedRuleIds.length > 0} onChange={(event) => event.target.checked ? toggleAllVisible(true) : setSelectedRuleIds([])} />
+          </label>
+          <select value="" onChange={() => undefined}>
+            <option value="">请选择批量操作</option>
+            <option value="delete">删除所选规则</option>
+          </select>
+          <button className="secondary-button" type="button" disabled={pendingChanges.length === 0 || isSubmitting} onClick={() => setPendingChanges([])}>清空待应用</button>
+          <button className="primary-button soft" type="button" disabled={selectedRuleIds.length === 0 || isSubmitting} onClick={() => bulkDeleteSelected()}>批量操作</button>
+          <button className="primary-button" type="button" disabled={pendingChanges.length === 0 || isSubmitting} onClick={() => void applyPendingChanges()}>应用{pendingChanges.length ? ` (${pendingChanges.length})` : ""}</button>
+          <span>共 {filteredRules.length} 条</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LegacyFirewallManagementModal({
+  instance,
+  onClose,
+  onCreated
+}: {
+  instance: Instance;
+  onClose: () => void;
+  onCreated: (jobId: string) => void;
+}) {
+  const [action, setAction] = useState<FirewallTaskPayload["action"]>("open");
+  const [protocol, setProtocol] = useState<FirewallTaskPayload["protocol"]>("tcp");
+  const [portMin, setPortMin] = useState(22);
+  const [portMax, setPortMax] = useState(22);
+  const [sourceCidr, setSourceCidr] = useState("0.0.0.0/0");
+  const [targetScope, setTargetScope] = useState<FirewallTaskPayload["targetScope"]>("auto");
+  const [vnicId, setVnicId] = useState("primary");
+  const [snapshotBefore, setSnapshotBefore] = useState(true);
+  const [note, setNote] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+
+  const normalizedPortMin = Number(portMin) || 0;
+  const normalizedPortMax = Number(portMax) || normalizedPortMin;
+  const invalidPortRange = normalizedPortMin <= 0 || normalizedPortMin > 65535 || normalizedPortMax < normalizedPortMin || normalizedPortMax > 65535;
+
+  function applyQuickPort(option: (typeof firewallQuickPorts)[number]) {
+    setProtocol(option.protocol);
+    setPortMin(option.portMin);
+    setPortMax(option.portMax);
+  }
+
+  async function handleCreateTask() {
+    if (isSubmitting || invalidPortRange) return;
+    setIsSubmitting(true);
+    setErrorMessage("");
+    try {
+      const job = await createFirewallTask(instance.id, {
+        action,
+        protocol,
+        portMin: normalizedPortMin,
+        portMax: normalizedPortMax,
+        sourceCidr,
+        targetScope,
+        vnicId,
+        snapshotBefore,
+        note
+      });
+      onCreated(job.id);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "创建防火墙任务失败");
+      setIsSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="action-modal glass-modal">
+        <div className="modal-header-row">
+          <div className="modal-title-block">
+            <div className="modal-icon compact">
+              <ShieldAlert size={24} />
+            </div>
+            <div>
+              <h2>防火墙管理</h2>
+              <p>{instance.name} 的 OCI 入站端口开放与关闭任务。</p>
+            </div>
+          </div>
+          <button className="icon-button bordered" aria-label="关闭防火墙管理" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="modal-summary-card">
+          <div><span>公网 IP</span><strong>{instance.primaryIp || "-"}</strong></div>
+          <div><span>私网 IP</span><strong>{instance.privateIp || "-"}</strong></div>
+          <div><span>区域</span><strong>{instance.region}</strong></div>
+          <div><span>Shape</span><strong>{instance.shape}</strong></div>
+        </div>
+
+        <div className="form-section">
+          <div className="form-section-title">
+            <ShieldAlert size={18} />
+            <span>规则动作</span>
+          </div>
+          <div className="choice-grid retry-choice-grid">
+            <button className={`choice-card ${action === "open" ? "active" : ""}`} type="button" onClick={() => setAction("open")}>
+              <strong>开放端口</strong>
+              <span>如果规则不存在，则追加一条 OCI 入站规则。</span>
+            </button>
+            <button className={`choice-card ${action === "close" ? "active" : ""}`} type="button" onClick={() => setAction("close")}>
+              <strong>关闭端口</strong>
+              <span>删除协议、端口、来源 CIDR 完全匹配的 OCI 入站规则。</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="form-section">
+          <div className="button-row compact">
+            {firewallQuickPorts.map((option) => (
+              <button className="secondary-button" key={option.label} type="button" onClick={() => applyQuickPort(option)}>
+                {option.label} {option.portMin}
+              </button>
+            ))}
+          </div>
+          <div className="form-grid">
+            <label>
+              协议
+              <select value={protocol} onChange={(event) => setProtocol(event.target.value as FirewallTaskPayload["protocol"])}>
+                <option value="tcp">TCP</option>
+                <option value="udp">UDP</option>
+              </select>
+            </label>
+            <label>
+              起始端口
+              <input type="number" min={1} max={65535} value={portMin} onChange={(event) => setPortMin(Number(event.target.value))} />
+            </label>
+            <label>
+              结束端口
+              <input type="number" min={1} max={65535} value={portMax} onChange={(event) => setPortMax(Number(event.target.value))} />
+            </label>
+            <label>
+              来源 CIDR
+              <input value={sourceCidr} onChange={(event) => setSourceCidr(event.target.value)} placeholder="0.0.0.0/0 或 ::/0" />
+            </label>
+            <label>
+              作用范围
+              <select value={targetScope} onChange={(event) => setTargetScope(event.target.value as FirewallTaskPayload["targetScope"])}>
+                <option value="auto">自动：优先 NSG，否则 Security List</option>
+                <option value="nsg">仅 Network Security Group</option>
+                <option value="security_list">仅子网 Security List</option>
+              </select>
+            </label>
+            <label>
+              VNIC
+              <select value={vnicId} onChange={(event) => setVnicId(event.target.value)}>
+                <option value="primary">primary-vnic / {instance.privateIp || "-"}</option>
+              </select>
+            </label>
+            <label className="full-row">
+              任务备注
+              <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="例如：临时开放 SSH 排障，完成后关闭" />
+            </label>
+          </div>
+        </div>
+
+        <div className="switch-row">
+          <div>
+            <strong>操作前记录快照</strong>
+            <p>记录目标 VNIC、NSG 和 Security List 信息，用于审计和回滚判断。</p>
+          </div>
+          <button className={`toggle-switch ${snapshotBefore ? "on" : ""}`} onClick={() => setSnapshotBefore((value) => !value)} />
+        </div>
+
+        <div className="modal-warning">
+          <ShieldAlert size={18} />
+          <span>该功能修改 OCI 网络安全规则，不会修改实例系统内的 iptables、firewalld 或 Windows 防火墙。</span>
+        </div>
+        {invalidPortRange ? <div className="inline-error">端口范围必须在 1-65535 之间，且结束端口不能小于起始端口。</div> : null}
+        {errorMessage ? <div className="inline-error">{errorMessage}</div> : null}
+
+        <div className="button-row">
+          <button className="secondary-button" disabled={isSubmitting} onClick={onClose}>取消</button>
+          <button className="primary-button" disabled={isSubmitting || invalidPortRange} onClick={() => void handleCreateTask()}>
+            {isSubmitting ? "创建中..." : action === "open" ? "创建开放端口任务" : "创建关闭端口任务"}
+          </button>
+        </div>
       </div>
     </div>
   );

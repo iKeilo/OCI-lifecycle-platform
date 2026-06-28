@@ -63,6 +63,7 @@ export type Instance = {
   ociInstanceId: string;
   profileId: string;
   compartmentId: string;
+  tags?: Record<string, string>;
   lastSyncedAt: string;
 };
 
@@ -304,6 +305,56 @@ export type IPTaskPayload = {
   openHttpIpv6: boolean;
   openHttpsIpv6: boolean;
   snapshotBefore: boolean;
+};
+
+export type FirewallTaskPayload = {
+  action: "open" | "close" | "delete_broad";
+  protocol: "tcp" | "udp";
+  portMin: number;
+  portMax: number;
+  sourceCidr: string;
+  targetScope: "auto" | "nsg" | "security_list";
+  vnicId: string;
+  containerId?: string;
+  containerType?: string;
+  ruleId?: string;
+  snapshotBefore: boolean;
+  note: string;
+};
+
+export type FirewallRule = {
+  id: string;
+  containerId: string;
+  containerType: "nsg" | "security_list" | string;
+  protocol: string;
+  portMin?: number;
+  portMax?: number;
+  portLabel: string;
+  direction: string;
+  source: string;
+  sourceType?: string;
+  policy: string;
+  status: string;
+  remark?: string;
+  time?: string;
+  isBroadRule: boolean;
+  editable: boolean;
+  deleteMode: string;
+};
+
+export type FirewallRulesInventory = {
+  verified: boolean;
+  executionMode: string;
+  instanceId: string;
+  vnicId?: string;
+  subnetId?: string;
+  nsgIds?: string[];
+  securityListIds?: string[];
+  rules: FirewallRule[];
+  requestId?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  loadedAt: string;
 };
 
 export type AutomationTaskPayload = {
@@ -647,6 +698,22 @@ export async function createIPTask(instanceId: string, payload: IPTaskPayload): 
     method: "POST",
     body: JSON.stringify(payload)
   });
+}
+
+export async function createFirewallTask(instanceId: string, payload: FirewallTaskPayload): Promise<Job> {
+  return request<Job>(`/api/instances/${encodeURIComponent(instanceId)}/firewall-tasks`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function getFirewallRules(instanceId: string, params: { profileId?: string; region?: string; compartmentId?: string; vnicId?: string } = {}): Promise<FirewallRulesInventory> {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value) query.set(key, value);
+  });
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request<FirewallRulesInventory>(`/api/instances/${encodeURIComponent(instanceId)}/firewall-rules${suffix}`);
 }
 
 export async function createInstanceAction(instanceId: string, payload: InstanceActionPayload): Promise<Job> {

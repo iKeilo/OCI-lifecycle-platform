@@ -267,7 +267,8 @@ func migrateFileStoreToDatabase(path string, persistence *db.PostgresSink, secre
 		for _, profile := range profiles {
 			profileSecret, err := source.GetProfileSecret(profile.ID)
 			if err != nil {
-				return err
+				slog.Warn("skipping file profile migration because the private key cannot be decrypted; re-add this profile in the web console", "profileID", profile.ID, "profileName", profile.Name, "error", err)
+				continue
 			}
 			if err := persistence.SaveProfile(profile, profileSecret); err != nil {
 				return err

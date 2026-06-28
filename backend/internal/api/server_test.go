@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -976,6 +977,89 @@ func TestRetryJob(t *testing.T) {
 	}
 	if body.Input["retryOf"] != "JOB-1040" {
 		t.Fatalf("expected retryOf input, got %#v", body.Input)
+	}
+}
+
+func TestCreateFirewallTask(t *testing.T) {
+	ts := newTestServer()
+	res := postJSON(t, ts, "/api/instances/inst-prod-web-01/firewall-tasks", map[string]any{
+		"action":         "open",
+		"protocol":       "tcp",
+		"portMin":        22,
+		"portMax":        22,
+		"sourceCidr":     "0.0.0.0/0",
+		"targetScope":    "auto",
+		"vnicId":         "primary",
+		"snapshotBefore": true,
+	})
+
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d body=%s", res.Code, res.Body.String())
+	}
+	var body struct {
+		ID           string         `json:"id"`
+		ResourceType string         `json:"resourceType"`
+		Input        map[string]any `json:"input"`
+	}
+	decodeTestJSON(t, res.Body.Bytes(), &body)
+	if body.ID == "" || body.ResourceType != "instance" || body.Input["operation"] != "firewall" {
+		t.Fatalf("unexpected firewall task response: %#v", body)
+	}
+}
+
+func TestListFirewallRulesLocalModeIsExplicitlyUnverified(t *testing.T) {
+	ts := newTestServer()
+	req := httptest.NewRequest(http.MethodGet, "/api/instances/inst-prod-web-01/firewall-rules", nil)
+	res := httptest.NewRecorder()
+	ts.ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", res.Code, res.Body.String())
+	}
+	var body struct {
+		Verified      bool   `json:"verified"`
+		ExecutionMode string `json:"executionMode"`
+		ErrorCode     string `json:"errorCode"`
+		Rules         []any  `json:"rules"`
+	}
+	decodeTestJSON(t, res.Body.Bytes(), &body)
+	if body.Verified || body.ExecutionMode != "local" || body.ErrorCode != "OCI_NOT_ENABLED" || len(body.Rules) != 0 {
+		t.Fatalf("unexpected firewall inventory response: %#v", body)
+	}
+}
+
+type profileKeyMissingSink struct{}
+
+func (profileKeyMissingSink) SaveProfile(domain.Profile, domain.ProfileSecret) error {
+	return errors.New("PROFILE_KEY_ENCRYPTION_KEY is required to store an inline OCI private key")
+}
+func (profileKeyMissingSink) SaveJob(domain.Job) error           { return nil }
+func (profileKeyMissingSink) SaveInstance(domain.Instance) error { return nil }
+func (profileKeyMissingSink) RecordAudit(domain.AuditLog) error  { return nil }
+
+func TestCreateProfileReportsMissingProfileEncryptionKey(t *testing.T) {
+	s := store.New()
+	s.SetPersistenceSink(profileKeyMissingSink{})
+	ts := NewServer(s).Handler()
+	res := postJSON(t, ts, "/api/profiles", map[string]any{
+		"name":          "debug-profile",
+		"tenancyOcid":   "ocid1.tenancy.oc1..debug",
+		"userOcid":      "ocid1.user.oc1..debug",
+		"fingerprint":   "00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff",
+		"defaultRegion": "ap-chuncheon-1",
+		"privateKey":    "-----BEGIN PRIVATE KEY-----\ndebug\n-----END PRIVATE KEY-----",
+	})
+	if res.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d body=%s", res.Code, res.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeTestJSON(t, res.Body.Bytes(), &body)
+	if body.Error.Code != "PROFILE_KEY_ENCRYPTION_KEY_REQUIRED" {
+		t.Fatalf("unexpected error body: %#v", body)
 	}
 }
 

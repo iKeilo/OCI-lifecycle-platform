@@ -130,8 +130,25 @@ func mapOCIInstance(cfg ReadinessConfig, compartmentID string, item core.Instanc
 		OCIInstanceID: instanceID,
 		ProfileID:     "DEFAULT",
 		CompartmentID: compartmentID,
+		Tags:          cleanStringMap(item.FreeformTags),
 		LastSyncedAt:  syncedAt,
 	}
+}
+
+func cleanStringMap(values map[string]string) map[string]string {
+	out := map[string]string{}
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func fillPrimaryVNIC(ctx context.Context, clients Clients, compartmentID string, instance *domain.Instance, requestIDs *[]string) error {

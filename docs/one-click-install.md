@@ -1,262 +1,143 @@
 # 一键安装脚本说明
 
-`scripts/install.sh` 是项目唯一的一键安装入口。默认使用 Docker 模式，也保留 systemd 模式。
+项目提供两个入口：
 
-Docker 版说明见：[Docker 版部署说明](docker-install.md)。
+- Docker 默认入口：`panel_install.sh`
+- 原生 Linux/systemd 入口：`panel_linux_install.sh`
 
-默认 Docker 安装：
+Docker 模式默认拉取 GitHub Container Registry 已构建镜像；原生 Linux 模式默认拉取 GitHub Release 已构建二进制包。只有在包不可用或显式关闭时，才回退到源码构建。
+
+## Docker 快速安装
 
 ```bash
 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
 ```
 
-原生 Linux/systemd 安装：
+运行后会出现菜单：
+
+```text
+1) Install / first setup
+2) Update from GitHub latest
+3) Uninstall
+4) Reset panel login password
+```
+
+默认镜像：
+
+```text
+ghcr.io/ikeilo/oci-lifecycle-platform:latest
+```
+
+指定版本：
+
+```bash
+OCI_LIFECYCLE_IMAGE_TAG=1.0.27 \
+bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
+```
+
+强制源码构建：
+
+```bash
+OCI_LIFECYCLE_USE_PACKAGE=false \
+bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
+```
+
+## 原生 Linux 快速安装
 
 ```bash
 bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_linux_install.sh)
 ```
 
-交互安装时：
+安装器会根据 CPU 架构自动下载 Release 附件：
 
-- Web 端口直接回车会随机分配可用端口。
-- 第一次输入面板密码时直接回车会随机生成密码，安装器只会在终端打印一次，不会保存到服务器文件。
-- 安装脚本默认设置 `OCI_EXECUTION_MODE=oci`，Profile 测试会直接调用真实 OCI API。
+- `oci-lifecycle-platform-linux-amd64.tar.gz`
+- `oci-lifecycle-platform-linux-arm64.tar.gz`
+- `oci-lifecycle-platform-linux-386.tar.gz`
+- `oci-lifecycle-platform-linux-armv7.tar.gz`
 
-如果已经克隆仓库，也可以执行：
+下载后直接安装 `bin/oci-lifecycle-platform`、`bin/panel-password` 和前端 `www/`，不再在服务器上执行 `npm run build` 或 `go build`。
 
-```bash
-sudo bash scripts/install.sh install
-```
-
-传统 systemd 安装：
+通过统一入口安装 systemd 版本也会走预编译包：
 
 ```bash
-sudo bash scripts/install.sh --systemd install
+bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh) --systemd install
 ```
 
-## 默认安装路径
+关闭预编译包回退源码构建：
+
+```bash
+OCI_LIFECYCLE_USE_PREBUILT=false \
+bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_linux_install.sh)
+```
+
+## 密码和端口
+
+- 第一次设置密码时直接回车，会随机生成密码并只在终端打印一次。
+- Docker 安装时端口直接回车，会随机选择可用端口。
+- 可以用 `PANEL_PASSWORD` 和 `WEB_PORT` 做非交互安装。
+
+示例：
+
+```bash
+PANEL_PASSWORD='change-this-password' WEB_PORT=18080 \
+bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh) install
+```
+
+## 默认路径
+
+Docker 模式：
+
+```text
+/opt/oci-lifecycle-platform-docker/
+/etc/oci-lifecycle-platform/
+```
+
+systemd 模式：
 
 ```text
 /opt/oci-lifecycle-platform/
   bin/oci-lifecycle-platform
   bin/panel-password
-  src/
   www/
 
 /etc/oci-lifecycle-platform/
   panel.env
   profiles.json
-
-/etc/systemd/system/oci-lifecycle-platform.service
 ```
-
-如果 `USE_NGINX=true`，或 `USE_NGINX=auto` 且检测到 nginx，脚本还会创建：
-
-```text
-/etc/nginx/sites-available/oci-lifecycle-platform.conf
-```
-
-## 支持系统
-
-当前脚本面向 Debian/Ubuntu/Armbian：
-
-- `systemd`
-- `apt-get`
-- `curl`
-- `tar`
-- Node.js 20+
-- Go 版本满足 `backend/go.mod`
-
-如果系统没有合适 Go 版本，脚本会从 `go.dev` 下载对应 CPU 架构的 Go 工具链到 `APP_DIR/.toolchain/go`，不会写入 `/usr/local/go`。
-
-## 菜单选项
-
-直接运行：
-
-```bash
-sudo bash scripts/install.sh
-```
-
-菜单包含 4 个选项：
-
-1. Install / first setup
-2. Update from GitHub latest
-3. Uninstall
-4. Reset panel login password
-
-## 从 GitHub 安装
-
-公开仓库或服务器已具备 GitHub 拉取权限时：
-
-```bash
-git clone https://github.com/iKeilo/OCI-lifecycle-platform.git
-cd OCI-lifecycle-platform
-sudo bash scripts/install.sh install
-```
-
-脚本默认仓库地址已经是：
-
-```text
-https://github.com/iKeilo/OCI-lifecycle-platform.git
-```
-
-因此也可以指定一个空目录运行：
-
-```bash
-sudo OCI_LIFECYCLE_REPO_URL=https://github.com/iKeilo/OCI-lifecycle-platform.git \
-  bash scripts/install.sh install
-```
-
-私有仓库需要先配置 GitHub 凭据、deploy key，或使用本地源码安装。
-
-## 从本地源码安装
-
-适合测试服务器、内网服务器或私有仓库无 Git 凭据的场景：
-
-```bash
-sudo bash scripts/install.sh install --source /path/to/OCI-lifecycle-platform
-```
-
-非交互设置密码：
-
-```bash
-sudo PANEL_PASSWORD='change-this-password' \
-  bash scripts/install.sh install --source /path/to/OCI-lifecycle-platform
-```
-
-脚本会把明文密码转换为 bcrypt，写入 `PANEL_PASSWORD_HASH`，并清空 `PANEL_PASSWORD`。
-
-## 无 nginx / 端口被占用
-
-如果 80 端口已经被占用，设置 `WEB_PORT`：
-
-```bash
-sudo WEB_PORT=18080 bash scripts/install.sh install
-```
-
-如果不想安装或使用 nginx，让 Go 服务直接托管前端：
-
-```bash
-sudo WEB_PORT=18080 USE_NGINX=false bash scripts/install.sh install
-```
-
-此时 `/api/*` 和前端页面都由同一个 Go 进程提供。
-
-## 小根分区服务器
-
-如果根分区很小，建议把应用、配置、缓存和备份放到大盘：
-
-```bash
-sudo APP_DIR=/mnt/Storage1/oci-lifecycle-platform \
-  ENV_DIR=/mnt/Storage1/oci-lifecycle-platform-config \
-  BACKUP_DIR=/mnt/Storage1/oci-lifecycle-platform-backups \
-  WEB_PORT=18080 \
-  USE_NGINX=false \
-  GO_PROXY=https://goproxy.cn,direct \
-  bash scripts/install.sh install --source /tmp/OCI-lifecycle-platform
-```
-
-临时测试可使用：
-
-```bash
-SYSTEMD_DIR=/run/systemd/system
-```
-
-注意：`/run/systemd/system` 不是持久目录，服务器重启后服务单元会丢失。生产环境应使用默认 `/etc/systemd/system`。
 
 ## 更新
 
-```bash
-sudo bash scripts/install.sh update
-```
-
-更新会：
-
-- 同步源码。
-- 重新执行 `npm ci && npm run build`。
-- 重新构建 Go 后端。
-- 保留 `panel.env` 和 `profiles.json`。
-- 重启服务。
-
-## 更改面板密码
+Docker 更新：
 
 ```bash
-sudo bash scripts/install.sh change-password
+bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh) update
 ```
 
-非交互方式：
+systemd 更新：
 
 ```bash
-sudo PANEL_PASSWORD='new-strong-password' bash scripts/install.sh change-password
+bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_linux_install.sh) update
 ```
 
-## 配置 OCI env fallback
-
-推荐在 Web 控制台的 Profile 页面粘贴 OCI config 和 PEM 私钥。脚本中的 `configure-oci` 只作为 env fallback：
-
-```bash
-sudo bash scripts/install.sh configure-oci
-```
-
-会写入：
-
-- `OCI_EXECUTION_MODE=oci`
-- `OCI_TENANCY_OCID`
-- `OCI_USER_OCID`
-- `OCI_FINGERPRINT`
-- `OCI_REGION`
-- `OCI_PRIVATE_KEY_FILE`
-
-不要把 PEM 文件放进 Git 仓库。
-
-## 验证
-
-```bash
-systemctl status oci-lifecycle-platform --no-pager
-curl -i http://127.0.0.1/api/health
-```
-
-使用非 80 端口：
-
-```bash
-curl -i http://127.0.0.1:18080/api/health
-```
-
-开启面板密码后，未登录访问受保护 API 应返回：
-
-```json
-{"error":{"code":"AUTH_REQUIRED","message":"panel login required"}}
-```
-
-## 备份
-
-```bash
-sudo BACKUP_DIR=/root bash scripts/install.sh backup
-```
-
-备份包含 `panel.env` 和加密 Profile store，仍然属于敏感文件，请妥善保存。
+两种模式都会保留 `/etc/oci-lifecycle-platform` 下的配置、数据库连接和加密 Profile 数据。
 
 ## 卸载
 
 ```bash
-sudo bash scripts/install.sh uninstall
+bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh) uninstall
 ```
 
-卸载会移除应用目录、systemd unit 和 nginx site。脚本会询问是否删除配置目录，因为其中可能包含面板密钥和加密 Profile 数据。
+卸载时会询问是否删除配置目录和 Docker 卷。配置目录可能包含面板密钥、加密 Profile 数据和数据库连接信息，删除前请确认已有备份。
 
-## 环境变量速查
+## 常用环境变量
 
 | 变量 | 用途 | 默认值 |
 | --- | --- | --- |
-| `OCI_LIFECYCLE_REPO_URL` | Git 仓库地址 | `https://github.com/iKeilo/OCI-lifecycle-platform.git` |
-| `OCI_LIFECYCLE_BRANCH` | Git 分支 | `main` |
-| `PANEL_PASSWORD` | 非交互安装/改密码输入 | 空 |
-| `OCI_EXECUTION_MODE` | 执行模式，生产默认应为真实 OCI SDK | `oci` |
-| `WEB_PORT` | Web 监听端口 | `80` |
-| `USE_NGINX` | `true` / `false` / `auto` | `auto` |
-| `GO_PROXY` | Go module proxy | 空 |
-| `GO_ROOT` | Go 工具链安装路径 | `$APP_DIR/.toolchain/go` |
-| `APP_DIR` | 应用目录 | `/opt/oci-lifecycle-platform` |
+| `OCI_LIFECYCLE_IMAGE_TAG` | Docker 镜像版本 | `latest` |
+| `OCI_LIFECYCLE_USE_PACKAGE` | Docker 是否拉 GHCR 镜像 | `true` |
+| `OCI_LIFECYCLE_USE_PREBUILT` | systemd 是否拉 Release 二进制 | `true` |
+| `OCI_LIFECYCLE_RELEASE_DOWNLOAD_BASE` | Release 附件下载地址 | GitHub latest download |
+| `PANEL_PASSWORD` | 非交互面板密码 | 空 |
+| `WEB_PORT` | Web 端口 | Docker `18080`，systemd `80` |
+| `APP_DIR` | systemd 应用目录 | `/opt/oci-lifecycle-platform` |
 | `ENV_DIR` | 配置目录 | `/etc/oci-lifecycle-platform` |
-| `BACKUP_DIR` | 备份输出目录 | `/root` |
-| `SYSTEMD_DIR` | systemd unit 目录 | `/etc/systemd/system` |

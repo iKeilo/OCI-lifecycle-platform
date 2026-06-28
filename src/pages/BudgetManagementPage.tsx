@@ -45,6 +45,35 @@ const defaultPolicy: BudgetPolicyState = {
   requireApproval: true
 };
 
+const HOURS_PER_DAY = 24;
+const ALWAYS_FREE_E2_MICRO_COUNT = 2;
+const ALWAYS_FREE_A1_OCPUS = 4;
+const ALWAYS_FREE_A1_MEMORY_GB = 24;
+const ALWAYS_FREE_BOOT_VOLUME_GB = 200;
+const ALWAYS_FREE_BOOT_VOLUME_VPUS_PER_GB = 10;
+const STANDARD_FLEX_PRICE = { ocpuHour: 0.0255, memoryGbHour: 0.0015 };
+const A1_FLEX_PRICE = { ocpuHour: 0.01, memoryGbHour: 0.0015 };
+const BOOT_VOLUME_GB_MONTH = 0.0255;
+const BOOT_VOLUME_VPU_GB_MONTH = 0.0017;
+
+type BudgetUsageEstimate = {
+  scopedInstances: Instance[];
+  billableInstances: Instance[];
+  currentHourlyUsd: number;
+  currentDailyUsd: number;
+  currentMonthlyUsd: number;
+  actualSpendUsd: number;
+  forecastSpendUsd: number;
+  elapsedHours: number;
+  hoursInMonth: number;
+  computeHourlyUsd: number;
+  storageHourlyUsd: number;
+  billableBootGb: number;
+  totalBootGb: number;
+  unknownPriceCount: number;
+  sourceLabel: string;
+};
+
 const actionModes = [
   {
     id: "notify",
@@ -92,15 +121,16 @@ export function BudgetManagementPage() {
   const [saveMessage, setSaveMessage] = useState("");
   const [settingsError, setSettingsError] = useState("");
 
-  const actualPercent = useMemo(() => percent(policy.actualSpend, policy.monthlyBudget), [policy.actualSpend, policy.monthlyBudget]);
-  const forecastPercent = useMemo(() => percent(policy.forecastSpend, policy.monthlyBudget), [policy.forecastSpend, policy.monthlyBudget]);
+  const selectedManualIds = useMemo(() => parseManualInstanceIds(policy.manualInstanceIds), [policy.manualInstanceIds]);
+  const usageEstimate = useMemo(() => estimateBudgetUsage(instances, policy, selectedManualIds), [instances, policy, selectedManualIds]);
+  const actualPercent = useMemo(() => percent(usageEstimate.actualSpendUsd, policy.monthlyBudget), [usageEstimate.actualSpendUsd, policy.monthlyBudget]);
+  const forecastPercent = useMemo(() => percent(usageEstimate.forecastSpendUsd, policy.monthlyBudget), [usageEstimate.forecastSpendUsd, policy.monthlyBudget]);
   const triggered = Math.max(actualPercent, forecastPercent) >= policy.thresholdPercent;
   const scopeSummary = useMemo(() => summarizeScope(policy), [policy]);
   const manualCount = useMemo(
     () => policy.manualInstanceIds.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean).length,
     [policy.manualInstanceIds]
   );
-  const selectedManualIds = useMemo(() => parseManualInstanceIds(policy.manualInstanceIds), [policy.manualInstanceIds]);
   const filteredInstances = useMemo(() => filterInstances(instances, manualSearch), [instances, manualSearch]);
   const selectableInstances = useMemo(() => filteredInstances.filter((instance) => canSelectInstance(instance)), [filteredInstances]);
 
@@ -145,7 +175,7 @@ export function BudgetManagementPage() {
     setSettingsError("");
     setSaveMessage("");
     try {
-      const saved = await updateBudgetSettings(settingsFromPolicy(policy));
+      const saved = await updateBudgetSettings(settingsFromPolicy(policy, usageEstimate));
       setPolicy(policyFromSettings(saved));
       setSaveMessage(`已保存预算配置${saved.enabled ? "，预算管理已开启" : "，预算管理已关闭"}。`);
     } catch (error) {
@@ -250,7 +280,7 @@ export function BudgetManagementPage() {
             <span>实际用量</span>
           </div>
           <div className="metric-value">{actualPercent.toFixed(0)}%</div>
-          <p>${policy.actualSpend.toFixed(2)} / ${policy.monthlyBudget.toFixed(2)}</p>
+          <p>${usageEstimate.actualSpendUsd.toFixed(2)} / ${policy.monthlyBudget.toFixed(2)} · 月初至今估算</p>
         </section>
         <section className="glass-panel metric-card yellow">
           <div className="metric-topline">
@@ -258,7 +288,7 @@ export function BudgetManagementPage() {
             <span>预测用量</span>
           </div>
           <div className="metric-value">{forecastPercent.toFixed(0)}%</div>
-          <p>${policy.forecastSpend.toFixed(2)} forecast</p>
+          <p>${usageEstimate.forecastSpendUsd.toFixed(2)} forecast · 当前负载持续到月底</p>
         </section>
         <section className={`glass-panel metric-card ${triggered ? "yellow" : "green"}`}>
           <div className="metric-topline">
@@ -266,9 +296,43 @@ export function BudgetManagementPage() {
             <span>触发状态</span>
           </div>
           <div className="metric-value">{triggered ? "触发" : "正常"}</div>
-          <p>阈值 {policy.thresholdPercent}%</p>
+          <p>阈值 {policy.thresholdPercent}% · ${usageEstimate.currentHourlyUsd.toFixed(4)} / 小时</p>
         </section>
       </div>
+
+      <section className="glass-panel section-card">
+        <div className="section-title-row">
+          <div>
+            <h2>用量估算明细</h2>
+            <p>
+              当前显示来自{usageEstimate.sourceLabel}，不是 OCI Billing 官方账单。后续接入 Usage / Cost Analysis API 后可替换为真实账单源。
+            </p>
+          </div>
+          <DollarSign size={24} />
+        </div>
+        <div className="metric-grid compact">
+          <div className="metric-card flat">
+            <span>纳入范围</span>
+            <strong>{usageEstimate.billableInstances.length} / {usageEstimate.scopedInstances.length} 台</strong>
+            <p>已终止实例不计入预算估算。</p>
+          </div>
+          <div className="metric-card flat">
+            <span>计算资源</span>
+            <strong>${usageEstimate.computeHourlyUsd.toFixed(4)} / 小时</strong>
+            <p>Running 实例计入计算资源，Stopped 实例不计计算。</p>
+          </div>
+          <div className="metric-card flat">
+            <span>启动盘</span>
+            <strong>${usageEstimate.storageHourlyUsd.toFixed(4)} / 小时</strong>
+            <p>{usageEstimate.totalBootGb} GB 已纳入，超免费容量 {usageEstimate.billableBootGb} GB。</p>
+          </div>
+          <div className="metric-card flat">
+            <span>当前月化</span>
+            <strong>${usageEstimate.currentMonthlyUsd.toFixed(2)} / 月</strong>
+            <p>{usageEstimate.unknownPriceCount > 0 ? `${usageEstimate.unknownPriceCount} 台实例使用粗略价格或未知价格。` : "价格表覆盖当前纳入范围。"}</p>
+          </div>
+        </div>
+      </section>
 
       <section className="glass-panel section-card">
         <div className="section-title-row">
@@ -311,12 +375,12 @@ export function BudgetManagementPage() {
             <input type="number" min="1" max="10000" value={policy.thresholdPercent} onChange={(event) => update("thresholdPercent", Number(event.target.value))} />
           </label>
           <label>
-            当前实际花费 USD
-            <input type="number" min="0" value={policy.actualSpend} onChange={(event) => update("actualSpend", Number(event.target.value))} />
+            当前小时成本 USD
+            <input type="text" readOnly value={`$${usageEstimate.currentHourlyUsd.toFixed(4)} / 小时`} />
           </label>
           <label>
             预测花费 USD
-            <input type="number" min="0" value={policy.forecastSpend} onChange={(event) => update("forecastSpend", Number(event.target.value))} />
+            <input type="text" readOnly value={`$${usageEstimate.forecastSpendUsd.toFixed(2)} / 月`} />
           </label>
           <label>
             降配预设
@@ -661,6 +725,137 @@ function statusClass(status: string) {
   return "warning";
 }
 
+function estimateBudgetUsage(instances: Instance[], policy: BudgetPolicyState, manualIds: Set<string>): BudgetUsageEstimate {
+  const scopedInstances = instances.filter((instance) => isInBudgetScope(instance, policy, manualIds));
+  const billableInstances = scopedInstances.filter((instance) => !String(instance.status).toLowerCase().includes("terminat"));
+  const elapsed = monthProgress(new Date());
+  const computeHourlyUsd = estimateComputeFleetHourly(billableInstances);
+  const storage = estimateStorageFleetHourly(billableInstances);
+  const currentHourlyUsd = roundMoney(computeHourlyUsd + storage.hourly);
+  const actualSpendUsd = roundMoney(currentHourlyUsd * elapsed.elapsedHours);
+  const forecastSpendUsd = roundMoney(actualSpendUsd + currentHourlyUsd * Math.max(0, elapsed.hoursInMonth - elapsed.elapsedHours));
+
+  return {
+    scopedInstances,
+    billableInstances,
+    currentHourlyUsd,
+    currentDailyUsd: roundMoney(currentHourlyUsd * HOURS_PER_DAY),
+    currentMonthlyUsd: roundMoney(currentHourlyUsd * elapsed.hoursInMonth),
+    actualSpendUsd,
+    forecastSpendUsd,
+    elapsedHours: elapsed.elapsedHours,
+    hoursInMonth: elapsed.hoursInMonth,
+    computeHourlyUsd: roundMoney(computeHourlyUsd),
+    storageHourlyUsd: roundMoney(storage.hourly),
+    billableBootGb: storage.billableBootGb,
+    totalBootGb: storage.totalBootGb,
+    unknownPriceCount: billableInstances.filter((instance) => !hasKnownShapePrice(instance)).length,
+    sourceLabel: "实例清单本地估算"
+  };
+}
+
+function isInBudgetScope(instance: Instance, policy: BudgetPolicyState, manualIds: Set<string>) {
+  if (policy.profileId && policy.profileId !== "DEFAULT" && instance.profileId && instance.profileId !== policy.profileId) return false;
+  if (policy.region && instance.region && instance.region !== policy.region) return false;
+  if (policy.scopeMode === "manual") {
+    const id = instanceIdentity(instance);
+    return Boolean(id && manualIds.has(id));
+  }
+  if (policy.scopeMode === "compartment" && policy.compartmentId && policy.compartmentId !== "Root tenancy") {
+    return instance.compartmentId === policy.compartmentId || instance.compartment === policy.compartmentId;
+  }
+  if (policy.scopeMode === "tag") {
+    if (policy.compartmentId && policy.compartmentId !== "Root tenancy") {
+      if (instance.compartmentId !== policy.compartmentId && instance.compartment !== policy.compartmentId) return false;
+    }
+    const tagKey = policy.tagKey.trim();
+    if (!tagKey) return false;
+    const actual = instance.tags?.[tagKey];
+    return policy.tagValue.trim() ? actual === policy.tagValue.trim() : actual !== undefined;
+  }
+  return true;
+}
+
+function monthProgress(now: Date) {
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const hoursInMonth = Math.max(1, (nextMonth.getTime() - monthStart.getTime()) / 36e5);
+  const elapsedHours = Math.min(hoursInMonth, Math.max(0, (now.getTime() - monthStart.getTime()) / 36e5));
+  return { elapsedHours, hoursInMonth };
+}
+
+function estimateComputeFleetHourly(instances: Instance[]) {
+  const runningInstances = instances.filter((instance) => String(instance.status).toLowerCase().includes("running"));
+  const e2Micro = runningInstances.filter((instance) => instance.shape === "VM.Standard.E2.1.Micro");
+  const a1Flex = runningInstances.filter((instance) => instance.shape === "VM.Standard.A1.Flex");
+  const standardBillable = runningInstances.filter((instance) => instance.shape !== "VM.Standard.E2.1.Micro" && instance.shape !== "VM.Standard.A1.Flex");
+  const e2BillableCount = Math.max(0, e2Micro.length - ALWAYS_FREE_E2_MICRO_COUNT);
+  const a1Ocpus = a1Flex.reduce((sum, instance) => sum + safePositive(instance.ocpus), 0);
+  const a1MemoryGb = a1Flex.reduce((sum, instance) => sum + safePositive(instance.memoryGb), 0);
+  const standardHourly = standardBillable.reduce((sum, instance) => sum + estimateStandardShapeHourly(instance), 0);
+
+  return (
+    e2BillableCount * (STANDARD_FLEX_PRICE.ocpuHour + STANDARD_FLEX_PRICE.memoryGbHour) +
+    Math.max(0, a1Ocpus - ALWAYS_FREE_A1_OCPUS) * A1_FLEX_PRICE.ocpuHour +
+    Math.max(0, a1MemoryGb - ALWAYS_FREE_A1_MEMORY_GB) * A1_FLEX_PRICE.memoryGbHour +
+    standardHourly
+  );
+}
+
+function estimateStandardShapeHourly(instance: Instance) {
+  const ocpus = safePositive(instance.ocpus) || 1;
+  const memoryGb = safePositive(instance.memoryGb) || 1;
+  if (/^(VM|BM)\.Standard/.test(instance.shape)) {
+    return ocpus * STANDARD_FLEX_PRICE.ocpuHour + memoryGb * STANDARD_FLEX_PRICE.memoryGbHour;
+  }
+  return 0;
+}
+
+function estimateStorageFleetHourly(instances: Instance[]) {
+  const totalBootGb = instances.reduce((sum, instance) => sum + safePositive(instance.bootVolumeGb), 0);
+  const billableBootGb = Math.max(0, totalBootGb - ALWAYS_FREE_BOOT_VOLUME_GB);
+  const billableCapacityHourly = (billableBootGb * BOOT_VOLUME_GB_MONTH) / monthProgress(new Date()).hoursInMonth;
+  let remainingFreeBootGb = ALWAYS_FREE_BOOT_VOLUME_GB;
+  let billableBaseVpusGb = 0;
+  let billableUpliftVpusGb = 0;
+
+  instances.forEach((instance) => {
+    const bootGb = safePositive(instance.bootVolumeGb);
+    const vpus = normalizeBootVolumeVpus(instance.bootVolumeVpusPerGb);
+    const freeGb = Math.min(remainingFreeBootGb, bootGb);
+    const billableGb = Math.max(0, bootGb - freeGb);
+    remainingFreeBootGb = Math.max(0, remainingFreeBootGb - freeGb);
+    billableBaseVpusGb += billableGb * Math.min(vpus, ALWAYS_FREE_BOOT_VOLUME_VPUS_PER_GB);
+    if (vpus > ALWAYS_FREE_BOOT_VOLUME_VPUS_PER_GB) {
+      billableUpliftVpusGb += bootGb * (vpus - ALWAYS_FREE_BOOT_VOLUME_VPUS_PER_GB);
+    }
+  });
+
+  const performanceHourly = ((billableBaseVpusGb + billableUpliftVpusGb) * BOOT_VOLUME_VPU_GB_MONTH) / monthProgress(new Date()).hoursInMonth;
+  return {
+    hourly: billableCapacityHourly + performanceHourly,
+    billableBootGb,
+    totalBootGb
+  };
+}
+
+function hasKnownShapePrice(instance: Instance) {
+  return instance.shape === "VM.Standard.E2.1.Micro" || instance.shape === "VM.Standard.A1.Flex" || /^(VM|BM)\.Standard/.test(instance.shape);
+}
+
+function normalizeBootVolumeVpus(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return 10;
+  return Math.min(120, Math.max(10, Math.round(value)));
+}
+
+function safePositive(value: number) {
+  return Number.isFinite(value) && value > 0 ? Number(value) : 0;
+}
+
+function roundMoney(value: number) {
+  return Math.round((Number.isFinite(value) ? value : 0) * 10000) / 10000;
+}
+
 function policyFromSettings(settings: BudgetSettings): BudgetPolicyState {
   return {
     enabled: Boolean(settings.enabled),
@@ -688,12 +883,12 @@ function normalizeScopeMode(scopeMode: string): BudgetPolicyState["scopeMode"] {
   return "tag";
 }
 
-function settingsFromPolicy(policy: BudgetPolicyState): BudgetSettings {
+function settingsFromPolicy(policy: BudgetPolicyState, usage?: BudgetUsageEstimate): BudgetSettings {
   return {
     enabled: policy.enabled,
     monthlyBudgetUsd: policy.monthlyBudget,
-    actualSpendUsd: policy.actualSpend,
-    forecastSpendUsd: policy.forecastSpend,
+    actualSpendUsd: usage?.actualSpendUsd ?? policy.actualSpend,
+    forecastSpendUsd: usage?.forecastSpendUsd ?? policy.forecastSpend,
     thresholdPercent: policy.thresholdPercent,
     scopeMode: policy.scopeMode,
     profileId: policy.profileId,

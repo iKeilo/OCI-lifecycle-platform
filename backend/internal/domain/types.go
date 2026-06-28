@@ -45,28 +45,29 @@ const (
 )
 
 type Instance struct {
-	ID                  string         `json:"id"`
-	Name                string         `json:"name"`
-	Created             string         `json:"created"`
-	Shape               string         `json:"shape"`
-	Region              string         `json:"region"`
-	Compartment         string         `json:"compartment"`
-	PrimaryIP           string         `json:"primaryIp"`
-	PrivateIP           string         `json:"privateIp"`
-	PrimaryIPv6         string         `json:"primaryIpv6"`
-	IPv6Addresses       []string       `json:"ipv6Addresses"`
-	IPv6Enabled         bool           `json:"ipv6Enabled"`
-	OCPUs               int            `json:"ocpus"`
-	MemoryGB            int            `json:"memoryGb"`
-	BootVolumeGB        int            `json:"bootVolumeGb"`
-	BootVolumeVPUsPerGB int            `json:"bootVolumeVpusPerGb"`
-	Status              InstanceStatus `json:"status"`
-	Protected           bool           `json:"protected"`
-	OCIInstanceID       string         `json:"ociInstanceId"`
-	ProfileID           string         `json:"profileId"`
-	CompartmentID       string         `json:"compartmentId"`
-	LastSyncedAt        time.Time      `json:"lastSyncedAt"`
-	ReservedIPName      string         `json:"reservedIpName,omitempty"`
+	ID                  string            `json:"id"`
+	Name                string            `json:"name"`
+	Created             string            `json:"created"`
+	Shape               string            `json:"shape"`
+	Region              string            `json:"region"`
+	Compartment         string            `json:"compartment"`
+	PrimaryIP           string            `json:"primaryIp"`
+	PrivateIP           string            `json:"privateIp"`
+	PrimaryIPv6         string            `json:"primaryIpv6"`
+	IPv6Addresses       []string          `json:"ipv6Addresses"`
+	IPv6Enabled         bool              `json:"ipv6Enabled"`
+	OCPUs               int               `json:"ocpus"`
+	MemoryGB            int               `json:"memoryGb"`
+	BootVolumeGB        int               `json:"bootVolumeGb"`
+	BootVolumeVPUsPerGB int               `json:"bootVolumeVpusPerGb"`
+	Status              InstanceStatus    `json:"status"`
+	Protected           bool              `json:"protected"`
+	OCIInstanceID       string            `json:"ociInstanceId"`
+	ProfileID           string            `json:"profileId"`
+	CompartmentID       string            `json:"compartmentId"`
+	Tags                map[string]string `json:"tags,omitempty"`
+	LastSyncedAt        time.Time         `json:"lastSyncedAt"`
+	ReservedIPName      string            `json:"reservedIpName,omitempty"`
 }
 
 type JobStatus string
@@ -384,6 +385,21 @@ type IPTaskRequest struct {
 	OpenHTTPIPv6             bool   `json:"openHttpIpv6"`
 	OpenHTTPSIPv6            bool   `json:"openHttpsIpv6"`
 	SnapshotBefore           bool   `json:"snapshotBefore"`
+}
+
+type FirewallTaskRequest struct {
+	Action         string `json:"action"`
+	Protocol       string `json:"protocol"`
+	PortMin        int    `json:"portMin"`
+	PortMax        int    `json:"portMax"`
+	SourceCIDR     string `json:"sourceCidr"`
+	TargetScope    string `json:"targetScope"`
+	VNICID         string `json:"vnicId"`
+	ContainerID    string `json:"containerId"`
+	ContainerType  string `json:"containerType"`
+	RuleID         string `json:"ruleId"`
+	SnapshotBefore bool   `json:"snapshotBefore"`
+	Note           string `json:"note"`
 }
 
 type RebootInstanceRequest struct {

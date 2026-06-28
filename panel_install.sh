@@ -7,6 +7,7 @@ REPO_NAME="${OCI_LIFECYCLE_REPO_NAME:-OCI-lifecycle-platform}"
 BRANCH="${OCI_LIFECYCLE_BRANCH:-main}"
 RAW_URL="${PANEL_INSTALL_RAW_URL:-https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${BRANCH}/panel_install.sh}"
 ARCHIVE_URL="${OCI_LIFECYCLE_ARCHIVE_URL:-https://github.com/${REPO_OWNER}/${REPO_NAME}/archive/refs/heads/${BRANCH}.tar.gz}"
+LINUX_INSTALL_RAW_URL="${PANEL_LINUX_INSTALL_RAW_URL:-https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${BRANCH}/panel_linux_install.sh}"
 
 usage() {
   cat <<USAGE
@@ -48,9 +49,12 @@ if [[ "$(id -u)" -ne 0 ]]; then
       OCI_LIFECYCLE_REPO_OWNER="$REPO_OWNER" \
       OCI_LIFECYCLE_REPO_NAME="$REPO_NAME" \
       OCI_LIFECYCLE_USE_PACKAGE="${OCI_LIFECYCLE_USE_PACKAGE:-}" \
+      OCI_LIFECYCLE_USE_PREBUILT="${OCI_LIFECYCLE_USE_PREBUILT:-}" \
+      OCI_LIFECYCLE_RELEASE_DOWNLOAD_BASE="${OCI_LIFECYCLE_RELEASE_DOWNLOAD_BASE:-}" \
       OCI_LIFECYCLE_IMAGE="${OCI_LIFECYCLE_IMAGE:-}" \
       OCI_LIFECYCLE_IMAGE_TAG="${OCI_LIFECYCLE_IMAGE_TAG:-}" \
       OCI_LIFECYCLE_PACKAGE_IMAGE="${OCI_LIFECYCLE_PACKAGE_IMAGE:-}" \
+      PANEL_LINUX_INSTALL_RAW_URL="${PANEL_LINUX_INSTALL_RAW_URL:-}" \
       DEPLOY_MODE="${DEPLOY_MODE:-}" \
       DOCKER_APP_DIR="${DOCKER_APP_DIR:-}" \
       DOCKER_ENV_FILE="${DOCKER_ENV_FILE:-}" \
@@ -76,6 +80,18 @@ need_command() {
 need_command curl
 need_command tar
 need_command mktemp
+
+for arg in "$@"; do
+  if [[ "$arg" == "--systemd" || "$arg" == "systemd" ]]; then
+    filtered_args=()
+    for forwarded in "$@"; do
+      [[ "$forwarded" == "--systemd" || "$forwarded" == "systemd" ]] && continue
+      filtered_args+=("$forwarded")
+    done
+    printf '[%s] switching to native Linux prebuilt installer\n' "$APP_NAME"
+    exec bash -c 'curl -fsSL "$1" | bash -s -- "${@:2}"' bash "$LINUX_INSTALL_RAW_URL" "${filtered_args[@]}"
+  fi
+done
 
 tmp_dir="$(mktemp -d)"
 cleanup() {

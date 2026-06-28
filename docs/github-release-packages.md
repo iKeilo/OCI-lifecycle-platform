@@ -1,9 +1,9 @@
 # GitHub Releases 与 Packages 发布说明
 
-本项目使用 GitHub Actions 同时发布：
+项目发布包含两部分：
 
-- GitHub Release：用于版本归档、安装脚本附件和发布说明。
-- GitHub Packages / GHCR：用于发布 Docker 镜像 `ghcr.io/ikeilo/oci-lifecycle-platform`。
+- GitHub Packages / GHCR：Docker 镜像，用于默认 Docker 一键安装。
+- GitHub Releases：安装脚本、说明文档、原生 Linux 预编译包和校验文件。
 
 ## 自动发布流程
 
@@ -13,85 +13,109 @@ Workflow 文件：
 .github/workflows/build-and-push-images.yml
 ```
 
-触发条件：
+触发方式：
 
-- 推送版本 tag，例如 `1.0.0` 或 `v1.0.0`。
-- 在 GitHub Actions 页面手动运行 `Build and Push Images`。
+- 推送版本 tag，例如 `v1.0.27`。
+- 在 GitHub Actions 手动运行 `Build and Push Images`。
 
-发布结果：
+## Docker Packages
 
-- Docker 镜像：
-  - `ghcr.io/ikeilo/oci-lifecycle-platform:<tag>`
-  - `ghcr.io/ikeilo/oci-lifecycle-platform:latest`
-  - `ghcr.io/ikeilo/oci-lifecycle-platform:sha-<commit>`
-- GitHub Release 附件：
-  - `panel_install.sh`
-  - `panel_linux_install.sh`
-  - `docker-compose.yml`
-  - `docker/.env.example`
-  - `docs/one-click-install.md`
-  - `docs/docker-install.md`
+发布 tag 后会构建并推送多架构镜像：
+
+```text
+ghcr.io/ikeilo/oci-lifecycle-platform:latest
+ghcr.io/ikeilo/oci-lifecycle-platform:v1.0.27
+ghcr.io/ikeilo/oci-lifecycle-platform:sha-<commit>
+```
+
+支持平台：
+
+- `linux/amd64`
+- `linux/arm64`
+
+Docker 一键安装默认直接拉取 GHCR 镜像，不在服务器本地编译。
+
+## Release 附件
+
+每个版本 Release 会附带：
+
+```text
+panel_install.sh
+panel_linux_install.sh
+docker-compose.yml
+docker/.env.example
+docs/one-click-install.md
+docs/docker-install.md
+oci-lifecycle-platform-linux-amd64.tar.gz
+oci-lifecycle-platform-linux-arm64.tar.gz
+oci-lifecycle-platform-linux-386.tar.gz
+oci-lifecycle-platform-linux-armv7.tar.gz
+oci-lifecycle-platform-linux-*.tar.gz.sha256
+SHA256SUMS
+```
+
+原生 Linux tar 包内包含：
+
+```text
+bin/oci-lifecycle-platform
+bin/panel-password
+www/
+scripts/install.sh
+panel_linux_install.sh
+README.md
+LICENSE
+docs/
+```
 
 ## 创建新版本
-
-从干净的 `main` 分支创建并推送 tag：
 
 ```powershell
 git fetch origin --tags
 git status --short --branch
-git tag -a 1.0.0 -m "Release 1.0.0"
-git push origin 1.0.0
+git tag -a v1.0.27 -m "Release v1.0.27"
+git push origin main
+git push origin v1.0.27
 ```
 
-推送 tag 后，打开：
+推送 tag 后，打开 GitHub Actions 等待发布流程完成。
+
+## 安装器如何选择包
+
+Docker 入口：
+
+```bash
+bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
+```
+
+默认拉取：
 
 ```text
-https://github.com/iKeilo/OCI-lifecycle-platform/actions
+ghcr.io/ikeilo/oci-lifecycle-platform:latest
 ```
 
-等待 `Build and Push Images` 完成。
-
-## 使用 GitHub Packages 镜像安装
-
-默认 Docker 一键安装会直接拉取 GHCR 已发布镜像，不再在服务器本地构建：
+原生 Linux 入口：
 
 ```bash
-bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
+bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_linux_install.sh)
 ```
 
-指定版本：
+默认从 GitHub Release latest 下载当前架构的 tar 包。无法下载或架构不支持时，安装器会明确提示并回退源码安装。
 
-```bash
-OCI_LIFECYCLE_IMAGE_TAG=1.0.0 \
-bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
-```
+## 手动验证
 
-也可以显式覆盖镜像：
-
-```bash
-OCI_LIFECYCLE_USE_PACKAGE=true \
-OCI_LIFECYCLE_IMAGE=ghcr.io/ikeilo/oci-lifecycle-platform:1.0.0 \
-bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
-```
-
-如果必须在服务器本地重新构建镜像，例如调试源码构建问题：
-
-```bash
-OCI_LIFECYCLE_USE_PACKAGE=false \
-bash <(curl -L https://raw.githubusercontent.com/iKeilo/OCI-lifecycle-platform/main/panel_install.sh)
-```
-
-## 手动拉取验证
+验证 Docker 镜像：
 
 ```bash
 docker pull ghcr.io/ikeilo/oci-lifecycle-platform:latest
 docker run --rm ghcr.io/ikeilo/oci-lifecycle-platform:latest /app/oci-lifecycle-platform --help
 ```
 
-如果 Package 是私有的，需要先登录 GHCR：
+验证 Release 附件：
 
 ```bash
-echo "$GITHUB_TOKEN" | docker login ghcr.io -u <github-user> --password-stdin
+curl -fL https://github.com/iKeilo/OCI-lifecycle-platform/releases/latest/download/oci-lifecycle-platform-linux-amd64.tar.gz -o /tmp/oci-lifecycle-platform-linux-amd64.tar.gz
+curl -fL https://github.com/iKeilo/OCI-lifecycle-platform/releases/latest/download/oci-lifecycle-platform-linux-amd64.tar.gz.sha256 -o /tmp/oci-lifecycle-platform-linux-amd64.tar.gz.sha256
+cd /tmp && sha256sum -c oci-lifecycle-platform-linux-amd64.tar.gz.sha256
 ```
 
-建议将仓库 Packages 设置为公开，方便一键安装脚本在新服务器上无需凭据拉取镜像。
+如果 GHCR Package 不是公开状态，新服务器需要先登录 GHCR。建议将 Packages 设置为公开，以保证一键安装无需凭据。

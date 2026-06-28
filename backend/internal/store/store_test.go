@@ -1002,3 +1002,54 @@ func TestNotificationsPersistStatusAndDelete(t *testing.T) {
 		t.Fatalf("expected notification removed from persistence, got %#v", sink.notifications)
 	}
 }
+
+func TestCreateFirewallTaskStoresOperationInput(t *testing.T) {
+	s := NewSeeded()
+	job, err := s.CreateFirewallTask("inst-prod-web-01", domain.FirewallTaskRequest{
+		Action:      "open",
+		Protocol:    "tcp",
+		PortMin:     22,
+		PortMax:     22,
+		SourceCIDR:  "0.0.0.0/0",
+		TargetScope: "auto",
+		VNICID:      "primary",
+	}, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.ResourceType != "instance" || job.Input["operation"] != "firewall" {
+		t.Fatalf("expected firewall instance job, got %#v", job)
+	}
+	if job.Input["action"] != "open" || job.Input["protocol"] != "tcp" || job.Input["portMin"] != 22 || job.Input["sourceCidr"] != "0.0.0.0/0" {
+		t.Fatalf("unexpected firewall input: %#v", job.Input)
+	}
+}
+
+func TestCreateFirewallTaskRejectsInvalidCIDR(t *testing.T) {
+	s := NewSeeded()
+	_, err := s.CreateFirewallTask("inst-prod-web-01", domain.FirewallTaskRequest{
+		Action:     "open",
+		Protocol:   "tcp",
+		PortMin:    22,
+		SourceCIDR: "not-a-cidr",
+	}, "tester")
+	if err == nil {
+		t.Fatal("expected invalid CIDR to be rejected")
+	}
+}
+
+func TestCreateFirewallTaskAllowsDeleteBroadRule(t *testing.T) {
+	s := NewSeeded()
+	job, err := s.CreateFirewallTask("inst-prod-web-01", domain.FirewallTaskRequest{
+		Action:        "delete_broad",
+		ContainerType: "security_list",
+		ContainerID:   "ocid1.securitylist.oc1.test",
+		SourceCIDR:    "0.0.0.0/0",
+	}, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Input["action"] != "delete_broad" || job.Input["containerType"] != "security_list" || job.Input["containerId"] != "ocid1.securitylist.oc1.test" {
+		t.Fatalf("unexpected delete_broad input: %#v", job.Input)
+	}
+}

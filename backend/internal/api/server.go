@@ -124,6 +124,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/instances/{id}/actions", s.handleInstanceAction)
 	s.mux.HandleFunc("POST /api/instances/{id}/reboot", s.handleRebootInstance)
 	s.mux.HandleFunc("POST /api/instances/{id}/ip-tasks", s.handleCreateIPTask)
+	s.mux.HandleFunc("GET /api/instances/{id}/firewall-rules", s.handleFirewallRules)
+	s.mux.HandleFunc("POST /api/instances/{id}/firewall-tasks", s.handleCreateFirewallTask)
 	s.mux.HandleFunc("POST /api/instances/{id}/system/reinstall", s.handleInstanceReinstall)
 	s.mux.HandleFunc("GET /api/network/inventory", s.handleNetworkInventory)
 	s.mux.HandleFunc("POST /api/network/public-ips/batch", s.handlePublicIPBatchTask)
@@ -1003,6 +1005,63 @@ func (s *Server) handleCreateIPTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, job)
 }
 
+func (s *Server) handleFirewallRules(w http.ResponseWriter, r *http.Request) {
+	instanceID := strings.TrimSpace(r.PathValue("id"))
+	vnicID := strings.TrimSpace(r.URL.Query().Get("vnicId"))
+	if instance, ok := s.store.GetInstance(instanceID); ok {
+		if strings.TrimSpace(instance.OCIInstanceID) != "" {
+			instanceID = strings.TrimSpace(instance.OCIInstanceID)
+		}
+	}
+	if s.executionMode != "oci" {
+		writeJSON(w, http.StatusOK, oci.FirewallRulesInventory{
+			Verified:      false,
+			ExecutionMode: s.executionMode,
+			InstanceID:    instanceID,
+			Rules:         []oci.FirewallRule{},
+			ErrorCode:     "OCI_NOT_ENABLED",
+			ErrorMessage:  "当前后端未启用 OCI 执行模式，无法读取真实防火墙规则。",
+			LoadedAt:      time.Now().UTC(),
+		})
+		return
+	}
+	profileID, region, _ := s.ociActionContext(r)
+	cfg, _, err := s.resolveOCIConfig(profileID, region)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "OCI_PROFILE_RESOLVE_FAILED", err.Error())
+		return
+	}
+	result := oci.ListFirewallRules(r.Context(), cfg, instanceID, vnicID)
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleCreateFirewallTask(w http.ResponseWriter, r *http.Request) {
+	var req domain.FirewallTaskRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_JSON", err.Error())
+		return
+	}
+	if s.executionMode == "oci" {
+		profileID, region, compartmentID := s.ociActionContext(r)
+		job, err := s.store.CreateOCIFirewallTask(r.PathValue("id"), req, actorFromRequest(r), profileID, region, compartmentID)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		s.enqueue(job.ID)
+		writeJSON(w, http.StatusAccepted, sanitizeJob(job))
+		return
+	}
+
+	job, err := s.store.CreateFirewallTask(r.PathValue("id"), req, actorFromRequest(r))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	s.enqueue(job.ID)
+	writeJSON(w, http.StatusAccepted, sanitizeJob(job))
+}
+
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 	jobs := s.store.ListJobs()
 	for i := range jobs {
@@ -1520,6 +1579,8 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
 	case errors.Is(err, store.ErrConflict):
 		writeError(w, http.StatusConflict, "CONFLICT", err.Error())
+	case strings.Contains(err.Error(), "PROFILE_KEY_ENCRYPTION_KEY"):
+		writeError(w, http.StatusConflict, "PROFILE_KEY_ENCRYPTION_KEY_REQUIRED", "保存粘贴的 OCI PEM 私钥需要配置 PROFILE_KEY_ENCRYPTION_KEY；请先在部署环境中设置 32 字节或 base64 编码的 32 字节加密密钥")
 	default:
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "服务内部错误")
 	}

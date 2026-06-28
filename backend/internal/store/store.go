@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -195,6 +196,7 @@ func NewSeeded() *Store {
 			OCIInstanceID: "ocid1.instance.oc1.ap-singapore-1.placeholder001",
 			ProfileID:     "profile-default",
 			CompartmentID: "ocid1.compartment.oc1..production",
+			Tags:          map[string]string{"budget.autoAction": "enabled"},
 			LastSyncedAt:  now.Add(-30 * time.Second),
 		},
 		{
@@ -213,6 +215,7 @@ func NewSeeded() *Store {
 			OCIInstanceID: "ocid1.instance.oc1.ap-singapore-1.placeholder002",
 			ProfileID:     "profile-default",
 			CompartmentID: "ocid1.compartment.oc1..development",
+			Tags:          map[string]string{"budget.autoAction": "enabled"},
 			LastSyncedAt:  now.Add(-90 * time.Second),
 		},
 		{
@@ -1768,6 +1771,60 @@ func (s *Store) CreateOCIIPTask(instanceID string, req domain.IPTaskRequest, act
 	return s.saveJobLocked(job)
 }
 
+func (s *Store) CreateFirewallTask(instanceID string, req domain.FirewallTaskRequest, actor string) (domain.Job, error) {
+	if err := validateFirewallRequest(req); err != nil {
+		return domain.Job{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	instance, ok := s.instances[instanceID]
+	if !ok {
+		return domain.Job{}, ErrNotFound
+	}
+
+	job := s.newJobLocked("防火墙规则", "instance", instance.ID, actor)
+	job.ProfileID = instance.ProfileID
+	job.Region = instance.Region
+	job.CompartmentID = instance.CompartmentID
+	job.MaxRetries = 1
+	job.Input = firewallJobInput(req, instanceID, instance.Name)
+	return s.saveJobLocked(job)
+}
+
+func (s *Store) CreateOCIFirewallTask(instanceID string, req domain.FirewallTaskRequest, actor, profileID, region, compartmentID string) (domain.Job, error) {
+	if strings.TrimSpace(instanceID) == "" {
+		return domain.Job{}, fmt.Errorf("%w: instance OCID is required", ErrValidation)
+	}
+	if !strings.HasPrefix(instanceID, "ocid1.instance.") {
+		return domain.Job{}, fmt.Errorf("%w: instance id must be an OCI instance OCID", ErrValidation)
+	}
+	if err := validateFirewallRequest(req); err != nil {
+		return domain.Job{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	job := s.newJobLocked("防火墙规则", "instance", instanceID, actor)
+	profileID = defaultString(profileID, "DEFAULT")
+	if profile, ok := s.profileByIDOrNameLocked(profileID); ok {
+		profileID = profile.ID
+		if strings.TrimSpace(region) == "" {
+			region = profile.DefaultRegion
+		}
+	}
+	job.ProfileID = profileID
+	job.Region = region
+	job.CompartmentID = compartmentID
+	job.MaxRetries = 0
+	job.Input = firewallJobInput(req, instanceID, "")
+	job.Input["ociInstanceId"] = instanceID
+	job.Input["executionMode"] = "oci"
+	return s.saveJobLocked(job)
+}
+
 func (s *Store) CreatePublicIPBatchTask(req domain.PublicIPBatchTaskRequest, actor string) (domain.Job, error) {
 	action := strings.ToLower(strings.TrimSpace(req.Action))
 	if action != "create" && action != "delete" {
@@ -2212,6 +2269,7 @@ func (s *Store) CreateInstanceTask(req domain.CreateInstanceRequest, actor strin
 		OCIInstanceID:       "",
 		ProfileID:           profileID,
 		CompartmentID:       strings.TrimSpace(req.CompartmentID),
+		Tags:                cleanTags(req.Tags),
 		LastSyncedAt:        now,
 	}
 	if req.AssignPublicIP {
@@ -2469,6 +2527,7 @@ func instanceFromLaunchJob(job domain.Job, result map[string]any, syncedAt time.
 		OCIInstanceID:       instanceID,
 		ProfileID:           defaultString(job.ProfileID, stringFromMap(job.Input, "profileId")),
 		CompartmentID:       defaultString(stringFromMap(result, "compartmentId"), job.CompartmentID),
+		Tags:                stringMapFromAny(mapFromAny(job.Input["tags"])),
 		LastSyncedAt:        syncedAt,
 	}
 }
@@ -3866,4 +3925,70 @@ func defaultString(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func validateFirewallRequest(req domain.FirewallTaskRequest) error {
+	action := strings.ToLower(strings.TrimSpace(req.Action))
+	if action != "open" && action != "close" && action != "delete_broad" {
+		return fmt.Errorf("%w: firewall action must be open, close, or delete_broad", ErrValidation)
+	}
+	if action == "delete_broad" {
+		containerType := strings.ToLower(strings.TrimSpace(req.ContainerType))
+		if containerType != "nsg" && containerType != "security_list" {
+			return fmt.Errorf("%w: containerType must be nsg or security_list for delete_broad", ErrValidation)
+		}
+		if strings.TrimSpace(req.ContainerID) == "" {
+			return fmt.Errorf("%w: containerId is required for delete_broad", ErrValidation)
+		}
+		if containerType == "nsg" && strings.TrimSpace(req.RuleID) == "" {
+			return fmt.Errorf("%w: ruleId is required for NSG delete_broad", ErrValidation)
+		}
+		return nil
+	}
+	protocol := strings.ToLower(strings.TrimSpace(req.Protocol))
+	if protocol != "tcp" && protocol != "udp" {
+		return fmt.Errorf("%w: firewall protocol must be tcp or udp", ErrValidation)
+	}
+	if req.PortMin <= 0 || req.PortMin > 65535 {
+		return fmt.Errorf("%w: portMin must be between 1 and 65535", ErrValidation)
+	}
+	if req.PortMax <= 0 {
+		req.PortMax = req.PortMin
+	}
+	if req.PortMax < req.PortMin || req.PortMax > 65535 {
+		return fmt.Errorf("%w: portMax must be between portMin and 65535", ErrValidation)
+	}
+	source := defaultString(req.SourceCIDR, "0.0.0.0/0")
+	if _, err := netip.ParsePrefix(source); err != nil {
+		return fmt.Errorf("%w: sourceCidr must be a valid CIDR", ErrValidation)
+	}
+	scope := strings.ToLower(strings.TrimSpace(req.TargetScope))
+	if scope != "" && scope != "auto" && scope != "nsg" && scope != "security_list" {
+		return fmt.Errorf("%w: targetScope must be auto, nsg, or security_list", ErrValidation)
+	}
+	return nil
+}
+
+func firewallJobInput(req domain.FirewallTaskRequest, instanceID string, instanceName string) map[string]any {
+	portMax := req.PortMax
+	if portMax <= 0 {
+		portMax = req.PortMin
+	}
+	return map[string]any{
+		"operation":      "firewall",
+		"action":         strings.ToLower(strings.TrimSpace(req.Action)),
+		"protocol":       strings.ToLower(strings.TrimSpace(req.Protocol)),
+		"portMin":        req.PortMin,
+		"portMax":        portMax,
+		"sourceCidr":     defaultString(req.SourceCIDR, "0.0.0.0/0"),
+		"targetScope":    defaultString(strings.ToLower(strings.TrimSpace(req.TargetScope)), "auto"),
+		"vnicId":         strings.TrimSpace(req.VNICID),
+		"containerId":    strings.TrimSpace(req.ContainerID),
+		"containerType":  strings.ToLower(strings.TrimSpace(req.ContainerType)),
+		"ruleId":         strings.TrimSpace(req.RuleID),
+		"snapshotBefore": req.SnapshotBefore,
+		"note":           strings.TrimSpace(req.Note),
+		"instanceName":   instanceName,
+		"ociInstanceId":  instanceID,
+	}
 }

@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, LogOut, Menu, Moon, RefreshCw, Search, Settings2, Sun, X } from "lucide-react";
+import { Bell, ChevronDown, LogOut, Menu, Moon, RefreshCw, Settings2, Sun, X } from "lucide-react";
 import { useEffect, useMemo, useState, type PropsWithChildren } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { getSelectedOCIContext, setSelectedOCIContext } from "../app/ociContext";
@@ -213,6 +213,7 @@ export function AppShell({ children, onLogout }: AppShellProps) {
     const sorted = [...flatNavItems].sort((a, b) => b.path.length - a.path.length);
     return sorted.find((item) => (item.path === "/" ? location.pathname === "/" : location.pathname.startsWith(item.path)));
   }, [flatNavItems, location.pathname]);
+  const CurrentPageIcon = currentNavItem?.icon ?? ProductMark;
   const mobilePrimaryNav = useMemo(() => {
     const primaryPaths = ["/", "/instances", "/create", "/network", "/jobs"];
     return primaryPaths.map((path) => flatNavItems.find((item) => item.path === path)).filter(Boolean);
@@ -339,10 +340,14 @@ export function AppShell({ children, onLogout }: AppShellProps) {
 
       <div className="workspace">
         <header className="topbar glass-panel">
-          <div className="search-box">
-            <Search size={19} />
-            <input aria-label="搜索" placeholder="搜索资源、服务和文档" />
-            <kbd>Ctrl K</kbd>
+          <div className="topbar-page-context">
+            <span className="topbar-page-icon">
+              <CurrentPageIcon size={19} />
+            </span>
+            <span>
+              <small>{currentNavItem?.group ?? "控制台"}</small>
+              <strong>{currentNavItem?.label ?? "OCI 生命周期平台"}</strong>
+            </span>
           </div>
 
           <div className="context-strip">

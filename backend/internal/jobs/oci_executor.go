@@ -80,6 +80,8 @@ func (e *OCIExecutor) Execute(ctx context.Context, jobID string) error {
 			return e.executeLaunchJob(ctx, cfg, job)
 		} else if operation == "ip-management" {
 			return e.executeIPManagementJob(ctx, cfg, job)
+		} else if operation == "firewall" {
+			return e.executeFirewallJob(ctx, cfg, job)
 		} else if operation == "reinstall" {
 			return e.executeReinstallJob(ctx, cfg, job)
 		}
@@ -194,6 +196,57 @@ func (e *OCIExecutor) executeIPManagementJob(ctx context.Context, cfg oci.Readin
 		JobID:                    job.ID,
 	})
 	if _, err := e.store.SetJobOCIRefs(job.ID, result.RequestID, result.WorkRequestID); err != nil {
+		return err
+	}
+	if _, err := e.store.MarkJobWaitingOCI(job.ID); err != nil {
+		return ignoreConflict(err)
+	}
+	if _, err := e.store.MarkJobVerifying(job.ID); err != nil {
+		return ignoreConflict(err)
+	}
+
+	if !result.Verified {
+		if _, err := e.store.FailJob(job.ID, result.ErrorCode, result.ErrorMessage); err != nil {
+			return err
+		}
+		return errors.New(result.ErrorCode + ": " + result.ErrorMessage)
+	}
+
+	payload, err := structToMap(result)
+	if err != nil {
+		if _, failErr := e.store.FailJob(job.ID, "OCI_RESULT_ENCODE_FAILED", err.Error()); failErr != nil {
+			return failErr
+		}
+		return err
+	}
+	if _, err := e.store.CompleteJob(job.ID, payload); err != nil {
+		return ignoreConflict(err)
+	}
+	return nil
+}
+
+func (e *OCIExecutor) executeFirewallJob(ctx context.Context, cfg oci.ReadinessConfig, job domain.Job) error {
+	instanceID, _ := job.Input["ociInstanceId"].(string)
+	if instanceID == "" {
+		instanceID = job.ResourceID
+	}
+	result := oci.ExecuteFirewallTask(ctx, cfg, oci.FirewallExecutionRequest{
+		InstanceID:     instanceID,
+		VNICID:         stringFromInput(job.Input["vnicId"]),
+		Action:         stringFromInput(job.Input["action"]),
+		Protocol:       stringFromInput(job.Input["protocol"]),
+		PortMin:        intFromInput(job.Input["portMin"]),
+		PortMax:        intFromInput(job.Input["portMax"]),
+		SourceCIDR:     stringFromInput(job.Input["sourceCidr"]),
+		TargetScope:    stringFromInput(job.Input["targetScope"]),
+		ContainerID:    stringFromInput(job.Input["containerId"]),
+		ContainerType:  stringFromInput(job.Input["containerType"]),
+		RuleID:         stringFromInput(job.Input["ruleId"]),
+		SnapshotBefore: boolFromInput(job.Input["snapshotBefore"]),
+		Note:           stringFromInput(job.Input["note"]),
+		JobID:          job.ID,
+	})
+	if _, err := e.store.SetJobOCIRefs(job.ID, result.RequestID, ""); err != nil {
 		return err
 	}
 	if _, err := e.store.MarkJobWaitingOCI(job.ID); err != nil {

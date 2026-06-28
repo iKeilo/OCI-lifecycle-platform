@@ -37,6 +37,7 @@ USE_NGINX="${USE_NGINX:-auto}"
 GO_ROOT="${GO_ROOT:-$APP_DIR/.toolchain/go}"
 BACKUP_DIR="${BACKUP_DIR:-/root}"
 SOURCE_OVERRIDE=""
+PREBUILT_OVERRIDE=""
 YES=0
 ACTION=""
 USE_NGINX_RESOLVED="false"
@@ -64,6 +65,7 @@ Usage:
   sudo bash scripts/install.sh uninstall
   sudo bash scripts/install.sh --systemd install
   sudo DEPLOY_MODE=systemd bash scripts/install.sh install --source /path/to/repo
+  sudo bash scripts/install.sh --systemd install --prebuilt /path/to/release-package
 
 Environment:
   DEPLOY_MODE                 docker or systemd. Default docker.
@@ -110,6 +112,11 @@ parse_args() {
         [[ -n "$SOURCE_OVERRIDE" ]] || die "--source requires a path"
         shift 2
         ;;
+      --prebuilt)
+        PREBUILT_OVERRIDE="${2:-}"
+        [[ -n "$PREBUILT_OVERRIDE" ]] || die "--prebuilt requires a path"
+        shift 2
+        ;;
       --repo)
         REPO_URL="${2:-}"
         [[ -n "$REPO_URL" ]] || die "--repo requires a URL"
@@ -150,7 +157,7 @@ confirm() {
 
 install_base_packages() {
   local required=(curl openssl tar)
-  if [[ -z "$SOURCE_OVERRIDE" && -z "$(current_source_dir || true)" ]]; then
+  if [[ -z "$PREBUILT_OVERRIDE" && -z "$SOURCE_OVERRIDE" && -z "$(current_source_dir || true)" ]]; then
     required+=(git)
   fi
   if [[ "$USE_NGINX_RESOLVED" == "true" ]]; then
@@ -278,6 +285,12 @@ current_source_dir() {
 }
 
 sync_source() {
+  if [[ -n "$PREBUILT_OVERRIDE" ]]; then
+    [[ -x "$PREBUILT_OVERRIDE/bin/oci-lifecycle-platform" && -x "$PREBUILT_OVERRIDE/bin/panel-password" && -d "$PREBUILT_OVERRIDE/www" ]] || die "prebuilt package is incomplete: $PREBUILT_OVERRIDE"
+    log "using prebuilt package from $PREBUILT_OVERRIDE"
+    return
+  fi
+
   mkdir -p "$APP_DIR"
   local source="${SOURCE_OVERRIDE:-}"
   if [[ -z "$source" ]]; then
@@ -405,7 +418,7 @@ ensure_panel_password() {
   fi
   local password hash
   password="$(read_password)"
-  hash="$(hash_password_with_source "$password")"
+  hash="$(hash_password_with_binary "$password")"
   env_set PANEL_PASSWORD_HASH "$hash"
   env_set PANEL_PASSWORD ""
   log "panel password hash updated"
@@ -413,6 +426,16 @@ ensure_panel_password() {
 
 build_app() {
   mkdir -p "$BIN_DIR" "$WWW_DIR"
+  if [[ -n "$PREBUILT_OVERRIDE" ]]; then
+    install -m 0755 "$PREBUILT_OVERRIDE/bin/oci-lifecycle-platform" "$BIN_DIR/oci-lifecycle-platform"
+    install -m 0755 "$PREBUILT_OVERRIDE/bin/panel-password" "$BIN_DIR/panel-password"
+    rm -rf "$WWW_DIR"
+    mkdir -p "$WWW_DIR"
+    cp -a "$PREBUILT_OVERRIDE/www/." "$WWW_DIR/"
+    log "application installed from prebuilt package"
+    return
+  fi
+
   local required_go
   required_go="$(required_go_version "$SRC_DIR")"
   install_go "$required_go"

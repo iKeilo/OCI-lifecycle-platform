@@ -68,24 +68,115 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  release:
-    name: Create GitHub Release
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: docker
+  native:
+    name: Build Linux release packages
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Build frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build native Linux packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+
+          build_one() {
+            local asset_arch="$1"
+            local goarch="$2"
+            local goarm="${3:-}"
+            local package_dir="release/package-${asset_arch}"
+
+            rm -rf "$package_dir"
+            mkdir -p "$package_dir/bin" "$package_dir/www" "$package_dir/scripts" "$package_dir/docs"
+
+            if [[ -n "$goarm" ]]; then
+              (cd backend && GOOS=linux GOARCH="$goarch" GOARM="$goarm" CGO_ENABLED=0 \
+                go build -trimpath -ldflags="-s -w" -o "../$package_dir/bin/oci-lifecycle-platform" ./cmd/server)
+              (cd backend && GOOS=linux GOARCH="$goarch" GOARM="$goarm" CGO_ENABLED=0 \
+                go build -trimpath -ldflags="-s -w" -o "../$package_dir/bin/panel-password" ./cmd/panel-password)
+            else
+              (cd backend && GOOS=linux GOARCH="$goarch" CGO_ENABLED=0 \
+                go build -trimpath -ldflags="-s -w" -o "../$package_dir/bin/oci-lifecycle-platform" ./cmd/server)
+              (cd backend && GOOS=linux GOARCH="$goarch" CGO_ENABLED=0 \
+                go build -trimpath -ldflags="-s -w" -o "../$package_dir/bin/panel-password" ./cmd/panel-password)
+            fi
+
+            cp -a dist/. "$package_dir/www/"
+            cp scripts/install.sh "$package_dir/scripts/install.sh"
+            cp panel_linux_install.sh "$package_dir/panel_linux_install.sh"
+            cp README.md LICENSE "$package_dir/"
+            cp docs/one-click-install.md docs/docker-install.md docs/github-release-packages.md "$package_dir/docs/"
+            chmod +x "$package_dir/bin/oci-lifecycle-platform" "$package_dir/bin/panel-password" "$package_dir/scripts/install.sh" "$package_dir/panel_linux_install.sh"
+
+            tar -C release -czf "release/oci-lifecycle-platform-linux-${asset_arch}.tar.gz" "package-${asset_arch}"
+          }
+
+          build_one amd64 amd64
+          build_one arm64 arm64
+          build_one 386 386
+          build_one armv7 arm 7
+
+          cd release
+          sha256sum oci-lifecycle-platform-linux-*.tar.gz > SHA256SUMS
+          for asset in oci-lifecycle-platform-linux-*.tar.gz; do
+            sha256sum "$asset" > "${asset}.sha256"
+          done
+
+      - name: Upload native package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-linux-packages
+          path: |
+            release/oci-lifecycle-platform-linux-*.tar.gz
+            release/oci-lifecycle-platform-linux-*.tar.gz.sha256
+            release/SHA256SUMS
+
+  release:
+    name: Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
+      - docker
+      - native
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download native package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: native-linux-packages
+          path: release
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
+            release/oci-lifecycle-platform-linux-*.tar.gz
+            release/oci-lifecycle-platform-linux-*.tar.gz.sha256
+            release/SHA256SUMS
             panel_install.sh
             panel_linux_install.sh
             docker-compose.yml
             docker/.env.example
             docs/one-click-install.md
             docs/docker-install.md
-
